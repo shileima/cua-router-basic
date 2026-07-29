@@ -87,28 +87,39 @@ if [ "$SKIP_GIT" -eq 0 ]; then
   fi
 fi
 
-release_args=(release create "$TAG" --repo "$repo" --title "v${VERSION}")
-if [ -n "$NOTES_FILE" ]; then
-  release_args+=(--notes-file "$NOTES_FILE")
-else
-  release_args+=(--generate-notes)
-fi
+collect_release_assets() {
+  RELEASE_ASSETS=()
+  local f
+  for f in \
+    "$COMMON_SKILL_ROOT/dist/cua-router-basic-slim-${VERSION}.tar.gz" \
+    "$COMMON_SKILL_ROOT/dist/cua-router-basic-vendor-darwin-arm64-${VERSION}.tar.gz" \
+    "$COMMON_SKILL_ROOT/dist/cua-router-basic-slim-${VERSION}.tar.gz.sha256" \
+    "$COMMON_SKILL_ROOT/dist/cua-router-basic-vendor-darwin-arm64-${VERSION}.tar.gz.sha256" \
+    "$COMMON_SKILL_ROOT/dist/SHA256SUMS" \
+    "$COMMON_SKILL_ROOT/dist/release-manifest.json"
+  do
+    [ -f "$f" ] || die "missing release asset: $f"
+    RELEASE_ASSETS+=("$f")
+  done
+}
 
-# Re-upload if release already exists
-if gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
-  warn "release $TAG exists — uploading assets only"
-  gh release upload "$TAG" --repo "$repo" --clobber \
-    "$COMMON_SKILL_ROOT/dist/"*.tar.gz \
-    "$COMMON_SKILL_ROOT/dist/"*.sha256 \
-    "$COMMON_SKILL_ROOT/dist/SHA256SUMS" \
-    "$COMMON_SKILL_ROOT/dist/release-manifest.json"
-else
-  gh release create "${release_args[@]}" \
-    "$COMMON_SKILL_ROOT/dist/"*.tar.gz \
-    "$COMMON_SKILL_ROOT/dist/"*.sha256 \
-    "$COMMON_SKILL_ROOT/dist/SHA256SUMS" \
-    "$COMMON_SKILL_ROOT/dist/release-manifest.json"
-fi
+upload_release() {
+  collect_release_assets
+  if gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
+    warn "release $TAG exists — uploading assets only"
+    gh release upload "$TAG" --repo "$repo" --clobber "${RELEASE_ASSETS[@]}"
+  else
+    if [ -n "$NOTES_FILE" ]; then
+      gh release create "$TAG" --repo "$repo" --title "v${VERSION}" \
+        --notes-file "$NOTES_FILE" "${RELEASE_ASSETS[@]}"
+    else
+      gh release create "$TAG" --repo "$repo" --title "v${VERSION}" \
+        --generate-notes "${RELEASE_ASSETS[@]}"
+    fi
+  fi
+}
+
+upload_release
 
 info "release published: https://github.com/${repo}/releases/tag/${TAG}"
 info "push to remote:"

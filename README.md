@@ -19,6 +19,10 @@ curl -fsSL https://raw.githubusercontent.com/shileima/cua-router-basic/main/scri
 
 脚本会自动：下载 slim 技能包 → bootstrap vendor（ChatGPT 提取或 Release 下载）→ 注册到 `~/.cursor/skills` 并 Pin。
 
+若本机存在 `~/.automan/skills` 目录，默认安装到 `~/.automan/skills/cua-router-basic`，并同步：
+- `~/.cursor/skills/cua-router-basic` → 技能目录（符号链接）
+- `~/.automan/claude-code-agents/main/skills/cua-router-basic` → `../../../skills/cua-router-basic`
+
 ### 方式 B：Git clone + 一键安装
 
 ```bash
@@ -103,6 +107,7 @@ cua-router-basic/
 ├── .claude-plugin/       # Claude Code Plugin + marketplace
 ├── scripts/              # 安装、服务、发布脚本
 │   ├── install-remote.sh # Agent 远程一键安装
+│   ├── install-automan.sh # 同步 ~/.automan/claude-code-agents 技能符号链接
 │   ├── install-full.sh   # 完整安装
 │   ├── install-slim.sh   # 仅技能本体
 │   ├── download-vendor.sh
@@ -129,8 +134,10 @@ cua-router-basic/
 | `CUA_ROUTER_RELEASE_BASE` | 覆盖 vendor 下载基址，默认 `https://github.com/shileima/cua-router-basic/releases/download/v<version>` |
 | `CUA_ROUTER_VENDOR_URL` | 直接指定 vendor tarball URL |
 | `CUA_ROUTER_GITHUB_REPO` | 覆盖 GitHub 仓库（默认 `shileima/cua-router-basic`） |
-| `CUA_ROUTER_INSTALL_DIR` | Slim 安装目标目录 |
+| `CUA_ROUTER_INSTALL_DIR` | 覆盖默认安装目录 |
 | `CHATGPT_RESOURCES` | setup-vendor 源路径，默认 `/Applications/ChatGPT.app/Contents/Resources` |
+
+默认安装目录：若存在 `~/.automan/skills` 则为 `~/.automan/skills/cua-router-basic`，否则为 `~/.cursor/skills/cua-router-basic`。
 
 ---
 

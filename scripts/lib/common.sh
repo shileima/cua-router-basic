@@ -20,6 +20,53 @@ warn() {
   echo "[cua-router-basic] warning: $*" >&2
 }
 
+# Expand leading ~ to $HOME (bash does not expand ~ in all assignment contexts).
+expand_home_path() {
+  local path="$1"
+  case "$path" in
+    "~") printf '%s' "$HOME" ;;
+    "~/"*) printf '%s' "$HOME/${path#~/}" ;;
+    *) printf '%s' "$path" ;;
+  esac
+}
+
+# Ensure parent directories exist; remove broken symlinks blocking mkdir -p.
+ensure_install_parent() {
+  local target parent
+  target="$(expand_home_path "$1")"
+  parent="$(dirname "$target")"
+
+  if [ -z "$parent" ] || [ "$parent" = "." ] || [ "$parent" = "$target" ]; then
+    return 0
+  fi
+
+  if [ -e "$parent" ] && [ ! -d "$parent" ]; then
+    die "cannot create install dir; path exists but is not a directory: $parent"
+  fi
+
+  if [ -L "$parent" ] && [ ! -e "$parent" ]; then
+    warn "removing broken symlink: $parent"
+    rm "$parent"
+  fi
+
+  mkdir -p "$parent"
+}
+
+# Create install directory (and all parents). Prints the normalized absolute path.
+ensure_install_dir() {
+  local target
+  target="$(expand_home_path "$1")"
+
+  if [ -L "$target" ] && [ ! -e "$target" ]; then
+    warn "removing broken install symlink: $target"
+    rm "$target"
+  fi
+
+  ensure_install_parent "$target"
+  mkdir -p "$target"
+  cd "$target" && pwd
+}
+
 github_repo() {
   echo "${CUA_ROUTER_GITHUB_REPO:-shileima/cua-router-basic}"
 }
@@ -99,8 +146,136 @@ default_git_url() {
   printf 'https://github.com/%s.git' "$(github_repo)"
 }
 
+automan_skills_dir() {
+  printf '%s' "${CUA_ROUTER_AUTOMAN_SKILLS_DIR:-$HOME/.automan/skills}"
+}
+
+automan_skill_dir() {
+  printf '%s/cua-router-basic' "$(automan_skills_dir)"
+}
+
+claude_code_agents_main_skills_dir() {
+  printf '%s' "${CUA_ROUTER_CLAUDE_CODE_AGENTS_SKILLS_DIR:-$HOME/.automan/claude-code-agents/main/skills}"
+}
+
+automan_skills_available() {
+  [ -d "$(automan_skills_dir)" ]
+}
+
 default_install_dir() {
-  printf '%s' "${CUA_ROUTER_INSTALL_DIR:-$HOME/.cursor/skills/cua-router-basic}"
+  if [ -n "${CUA_ROUTER_INSTALL_DIR:-}" ]; then
+    printf '%s' "$CUA_ROUTER_INSTALL_DIR"
+    return 0
+  fi
+  if automan_skills_available; then
+    automan_skill_dir
+    return 0
+  fi
+  printf '%s' "$HOME/.cursor/skills/cua-router-basic"
+}
+
+# Create or refresh a symlink at link_dir/link_name -> skill_root (absolute target).
+install_symlink_to_skill() {
+  local skill_root="$1"
+  local link_dir="$2"
+  local link_name="${3:-cua-router-basic}"
+  local link_path="$link_dir/$link_name"
+  local current resolved_current
+
+  skill_root="$(cd "$skill_root" && pwd)"
+  link_dir="$(expand_home_path "$link_dir")"
+  link_path="$link_dir/$link_name"
+  ensure_install_parent "$link_path"
+
+  if [ -e "$link_path" ] && [ ! -L "$link_path" ] && [ "$(cd "$link_path" && pwd)" = "$skill_root" ]; then
+    info "skill already at link path: $link_path"
+    return 0
+  fi
+
+  if [ -L "$link_path" ]; then
+    current="$(readlink "$link_path")"
+    if [ "$current" = "$skill_root" ]; then
+      info "symlink already correct: $link_path -> $skill_root"
+      return 0
+    fi
+    resolved_current="$(cd "$(dirname "$link_path")" && cd "$current" 2>/dev/null && pwd || true)"
+    if [ "$resolved_current" = "$skill_root" ]; then
+      info "symlink already correct: $link_path -> $current"
+      return 0
+    fi
+    rm "$link_path"
+  elif [ -e "$link_path" ]; then
+    warn "backing up existing $link_path"
+    mv "$link_path" "${link_path}.bak.$(date +%s)"
+  fi
+
+  ln -s "$skill_root" "$link_path"
+  info "linked $link_path -> $skill_root"
+}
+
+# When ~/.automan/skills exists, register Claude Code agents skill symlink.
+sync_automan_claude_code_symlink() {
+  local skill_root="${1:-$(automan_skill_dir)}"
+  local agents_dir link_path automan_skills resolved_skill
+
+  automan_skills_available || return 0
+
+  agents_dir="$(claude_code_agents_main_skills_dir)"
+  if [ ! -d "$(dirname "$agents_dir")" ]; then
+    info "claude-code-agents main dir not found; skipping agents skill symlink"
+    return 0
+  fi
+
+  resolved_skill="$(cd "$skill_root" && pwd)"
+  automan_skills="$(cd "$(automan_skills_dir)" && pwd)"
+  link_path="$agents_dir/cua-router-basic"
+  ensure_install_parent "$link_path"
+
+  if [[ "$resolved_skill" == "$automan_skills/"* ]]; then
+    if [ -L "$link_path" ] && [ "$(readlink "$link_path")" = "../../../skills/cua-router-basic" ]; then
+      info "claude-code-agents symlink already correct: $link_path"
+      return 0
+    fi
+    if [ -e "$link_path" ] && [ ! -L "$link_path" ]; then
+      warn "backing up existing $link_path"
+      mv "$link_path" "${link_path}.bak.$(date +%s)"
+    elif [ -L "$link_path" ]; then
+      rm "$link_path"
+    fi
+    ln -s "../../../skills/cua-router-basic" "$link_path"
+    info "linked $link_path -> ../../../skills/cua-router-basic"
+    return 0
+  fi
+
+  install_symlink_to_skill "$resolved_skill" "$agents_dir" "cua-router-basic"
+}
+
+# Register skill in automan ecosystem: Claude Code agents symlink (+ optional copy).
+sync_automan_install() {
+  local skill_root="$1"
+  local automan_target resolved_skill resolved_automan
+
+  automan_skills_available || return 0
+
+  automan_target="$(automan_skill_dir)"
+  resolved_skill="$(cd "$skill_root" && pwd)"
+  resolved_automan="$(cd "$automan_target" 2>/dev/null && pwd || true)"
+
+  if [ "$resolved_skill" != "$resolved_automan" ]; then
+    if vendor_ready "$automan_target"; then
+      info "automan skill already present at $automan_target"
+    else
+      info "also installing skill copy to $automan_target"
+      ensure_install_parent "$automan_target"
+      rsync -a --delete \
+        --exclude '.DS_Store' \
+        "$resolved_skill/" "$automan_target/"
+    fi
+    sync_automan_claude_code_symlink "$automan_target"
+    return 0
+  fi
+
+  sync_automan_claude_code_symlink "$resolved_skill"
 }
 
 fetch_remote_version() {

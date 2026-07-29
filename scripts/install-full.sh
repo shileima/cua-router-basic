@@ -116,5 +116,7 @@ if [ "$INSTALL_CURSOR" -eq 1 ]; then
   SKILL_ROOT="$SKILL_ROOT" bash "$SKILL_ROOT/scripts/install-cursor.sh"
 fi
 
+sync_automan_install "$SKILL_ROOT"
+
 info "full install complete: $SKILL_ROOT"
 info "verify: bash \"$SKILL_ROOT/scripts/daemon.sh\" status"

@@ -3,6 +3,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+common_init
+
 SKILL_ROOT="${SKILL_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 SKILL_NAME="cua-router-basic"
 CURSOR_SKILLS_DIR="${CURSOR_SKILLS_DIR:-$HOME/.cursor/skills}"
@@ -32,7 +36,19 @@ ensure_sqlite3() {
 }
 
 install_symlink() {
+  CURSOR_SKILLS_DIR="$(expand_home_path "$CURSOR_SKILLS_DIR")"
+  TARGET_LINK="$CURSOR_SKILLS_DIR/$SKILL_NAME"
+  ensure_install_parent "$TARGET_LINK"
   mkdir -p "$CURSOR_SKILLS_DIR"
+  local skill_root resolved_link
+  skill_root="$(cd "$SKILL_ROOT" && pwd)"
+  if [ -e "$TARGET_LINK" ] && [ ! -L "$TARGET_LINK" ]; then
+    resolved_link="$(cd "$TARGET_LINK" && pwd)"
+    if [ "$resolved_link" = "$skill_root" ]; then
+      echo "[install-cursor] SKILL_ROOT is already the Cursor skills path: $skill_root"
+      return 0
+    fi
+  fi
   if [ -L "$TARGET_LINK" ]; then
     current="$(readlink "$TARGET_LINK")"
     if [ "$current" = "$SKILL_ROOT" ]; then

@@ -46,6 +46,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+TARGET="$(expand_home_path "$TARGET")"
+
 install_from_git() {
   ensure_command git
   if [ -d "$TARGET/.git" ] || [ -f "$TARGET/SKILL.md" ]; then
@@ -54,7 +56,7 @@ install_from_git() {
     fi
     rm -rf "$TARGET"
   fi
-  mkdir -p "$(dirname "$TARGET")"
+  ensure_install_parent "$TARGET"
   info "cloning $GIT_URL -> $TARGET"
   git clone --depth 1 "$GIT_URL" "$TARGET"
 }
@@ -67,7 +69,7 @@ install_from_source() {
     fi
     rm -rf "$TARGET"
   fi
-  mkdir -p "$(dirname "$TARGET")"
+  ensure_install_parent "$TARGET"
   info "copying slim package $SOURCE -> $TARGET"
   mkdir -p "$TARGET/scripts" "$TARGET/vendor"
   cp "$SOURCE/SKILL.md" "$TARGET/"

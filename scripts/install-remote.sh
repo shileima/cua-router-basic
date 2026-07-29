@@ -37,8 +37,14 @@ Usage: $0 [options]
 Install cua-router-basic for Agent use without requiring a prior git clone.
 
 Defaults:
-  --target   ~/.cursor/skills/cua-router-basic  (or CUA_ROUTER_INSTALL_DIR)
+  --target   ~/.automan/skills/cua-router-basic if ~/.automan/skills exists,
+             else ~/.cursor/skills/cua-router-basic (or CUA_ROUTER_INSTALL_DIR)
   --version  latest from GitHub main/.meta.json (or CUA_ROUTER_VERSION)
+
+When ~/.automan/skills exists, also registers:
+  ~/.automan/claude-code-agents/main/skills/cua-router-basic
+    -> ../../../skills/cua-router-basic
+  and ~/.cursor/skills/cua-router-basic -> skill root (via install-cursor.sh)
 
 Options:
   --target PATH       Install destination
@@ -71,6 +77,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$TARGET" ] || TARGET="$(default_install_dir)"
+TARGET="$(expand_home_path "$TARGET")"
 case "$VENDOR_MODE" in
   auto|chatgpt|download) ;;
   *) die "invalid --vendor-mode: $VENDOR_MODE" ;;
@@ -103,6 +110,11 @@ install_slim_from_tarball() {
   else
     warn "no slim checksum sidecar at ${url}.sha256; skipping verify"
   fi
+  if [ -L "$TARGET" ] && [ ! -e "$TARGET" ]; then
+    warn "removing broken install symlink: $TARGET"
+    rm "$TARGET"
+  fi
+  ensure_install_parent "$TARGET"
   mkdir -p "$TARGET"
   tar -xzf "$archive" -C "$TARGET"
   rm -rf "$tmpdir"
@@ -115,7 +127,7 @@ install_slim_from_git() {
     [ "$FORCE" -eq 1 ] || die "target already exists: $TARGET (use --force)"
     rm -rf "$TARGET"
   fi
-  mkdir -p "$(dirname "$TARGET")"
+  ensure_install_parent "$TARGET"
   info "cloning $GIT_URL -> $TARGET"
   git clone --depth 1 --branch "v${VERSION}" "$GIT_URL" "$TARGET" 2>/dev/null \
     || git clone --depth 1 "$GIT_URL" "$TARGET"
@@ -156,6 +168,7 @@ main() {
     bootstrap_vendor_and_cursor
   fi
   vendor_ready "$TARGET" || die "vendor bootstrap failed"
+  sync_automan_install "$TARGET"
   info "install complete"
   info "SKILL_ROOT=$TARGET"
   info "verify: bash \"$TARGET/scripts/daemon.sh\" status"

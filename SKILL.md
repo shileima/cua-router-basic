@@ -29,7 +29,7 @@ description: >
 
 Agent 在执行任何 sky/cua-router 操作前，**必须先确认技能与 vendor 已就绪**。若 `$SKILL_ROOT/SKILL.md` 不存在，或 `$SKILL_ROOT/vendor/codex/bin/codex` 不可执行，按以下流程自动安装（无需用户手动 git clone）。
 
-`SKILL_ROOT` 默认路径：`~/.cursor/skills/cua-router-basic`（可通过 `CUA_ROUTER_INSTALL_DIR` 覆盖）。
+`SKILL_ROOT` 默认路径：若存在 `~/.automan/skills` 则为 `~/.automan/skills/cua-router-basic`，否则为 `~/.cursor/skills/cua-router-basic`（可通过 `CUA_ROUTER_INSTALL_DIR` 覆盖）。
 
 #### 方式 A：远程一键安装（推荐）
 
@@ -39,10 +39,16 @@ curl -fsSL https://raw.githubusercontent.com/shileima/cua-router-basic/main/scri
 
 安装完成后脚本会输出 `SKILL_ROOT=...`，后续命令均基于该路径。
 
+若本机有 `~/.automan/skills`，还会同步 Claude Code agents 技能符号链接：
+`~/.automan/claude-code-agents/main/skills/cua-router-basic` → `../../../skills/cua-router-basic`
+
 #### 方式 B：技能目录已存在，仅缺 vendor
 
 ```bash
-SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-$HOME/.cursor/skills/cua-router-basic}"
+SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-${HOME}/.automan/skills/cua-router-basic}"
+if [ ! -f "$SKILL_ROOT/SKILL.md" ]; then
+  SKILL_ROOT="${HOME}/.cursor/skills/cua-router-basic"
+fi
 bash "$SKILL_ROOT/scripts/install-full.sh" --vendor-mode auto
 ```
 
@@ -56,7 +62,10 @@ Plugin 仅注册 slim 技能包；**首次使用前仍需 vendor bootstrap**（`
 #### 安装后验证
 
 ```bash
-SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-$HOME/.cursor/skills/cua-router-basic}"
+SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-${HOME}/.automan/skills/cua-router-basic}"
+if [ ! -f "$SKILL_ROOT/SKILL.md" ]; then
+  SKILL_ROOT="${HOME}/.cursor/skills/cua-router-basic"
+fi
 bash "$SKILL_ROOT/scripts/daemon.sh" start
 bash "$SKILL_ROOT/scripts/exec.sh" 'nodeRepl.write("ok")'
 # 输出 ok 表示技能与 cua-router 均已就绪
@@ -99,7 +108,8 @@ bash "$SKILL_ROOT/scripts/setup-vendor.sh"
 | `{SKILL_ROOT}/scripts/daemon.sh` | 守护进程管理（推荐：`start` / `status` / `restart` / `stop`） |
 | `{SKILL_ROOT}/scripts/exec.sh` | `/exec` 封装：自动启动服务、发送 JS、解析 `nodeRepl.write` 输出 |
 | `{SKILL_ROOT}/scripts/install-cursor.sh` | 安装到 `~/.cursor/skills` 并 Pin 到 `/` 菜单前列 |
-| `{SKILL_ROOT}/scripts/install-remote.sh` | Agent 远程一键安装（slim + vendor + Cursor 注册） |
+| `{SKILL_ROOT}/scripts/install-automan.sh` | 同步 `~/.automan/claude-code-agents/main/skills` 符号链接 |
+| `{SKILL_ROOT}/scripts/install-remote.sh` | Agent 远程一键安装（slim + vendor + Cursor/automan 注册） |
 | `{SKILL_ROOT}/scripts/install-full.sh` | 完整安装（vendor bootstrap + Cursor 注册） |
 | `{SKILL_ROOT}/scripts/computer-use-client.mjs` | sky runtime 入口模块，bootstrap 时 import |
 | `{SKILL_ROOT}/scripts/setup-vendor.sh` | 从 ChatGPT.app 提取 vendor 依赖 |

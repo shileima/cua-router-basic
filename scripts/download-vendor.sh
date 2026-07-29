@@ -86,6 +86,7 @@ fi
 
 info "extracting vendor into $SKILL_ROOT"
 rm -rf "$SKILL_ROOT/vendor"
+ensure_install_parent "$SKILL_ROOT/vendor"
 mkdir -p "$SKILL_ROOT/vendor"
 tar -xzf "$archive" -C "$SKILL_ROOT"
 

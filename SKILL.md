@@ -11,14 +11,53 @@ description: >
   「AX Tree 怎么找元素」「get_app_state 怎么用」「sky.click / sky.set_value 怎么用」
   「用 sky 操控 Chrome」「用 sky 填表单」「用 sky 自动化操作浏览器」
   「cua-router 服务检查」「computer use 依赖路径」「sky runtime 初始化」
+  「安装 cua-router-basic」「setup computer use」「安装 computer use 技能」
 
   开发新的 sky/cua-router 技能时，使用本技能作为公共规范参照，不需要在每个技能里重复描述依赖和操作规范。
   本技能不直接执行业务操作，只提供依赖说明、初始化代码和操作规范。
+  Agent 在技能或 vendor 未安装时应先执行下方「Agent 安装」章节，再执行业务操作。
 ---
 
 # cua-router-basic — sky Computer Use 基础规范
 
 本技能是所有依赖 cua-router + sky Computer Use API 的技能的**公共基础**，统一管理依赖声明、初始化流程、辅助函数和操作规范。新技能开发时直接参照本文件，无需重复描述。
+
+## Agent 安装（首次使用）
+
+Agent 在执行任何 sky/cua-router 操作前，**必须先确认技能与 vendor 已就绪**。若 `$SKILL_ROOT/SKILL.md` 不存在，或 `$SKILL_ROOT/vendor/codex/bin/codex` 不可执行，按以下流程自动安装（无需用户手动 git clone）。
+
+`SKILL_ROOT` 默认路径：`~/.cursor/skills/cua-router-basic`（可通过 `CUA_ROUTER_INSTALL_DIR` 覆盖）。
+
+#### 方式 A：远程一键安装（推荐）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shileima/cua-router-basic/main/scripts/install-remote.sh | bash
+```
+
+安装完成后脚本会输出 `SKILL_ROOT=...`，后续命令均基于该路径。
+
+#### 方式 B：技能目录已存在，仅缺 vendor
+
+```bash
+SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-$HOME/.cursor/skills/cua-router-basic}"
+bash "$SKILL_ROOT/scripts/install-full.sh" --vendor-mode auto
+```
+
+#### 方式 C：Cursor / Claude Code Plugin 安装
+
+- **Cursor**：`/add-plugin shileima/cua-router-basic`（或从 Plugin 市场安装）
+- **Claude Code**：`/plugin install cua-router-basic@cua-router-basic-dev`（需先添加本仓库 marketplace）
+
+Plugin 仅注册 slim 技能包；**首次使用前仍需 vendor bootstrap**（`daemon.sh start` 或 `install-full.sh` 会自动完成）。
+
+#### 安装后验证
+
+```bash
+SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-$HOME/.cursor/skills/cua-router-basic}"
+bash "$SKILL_ROOT/scripts/daemon.sh" start
+bash "$SKILL_ROOT/scripts/exec.sh" 'nodeRepl.write("ok")'
+# 输出 ok 表示技能与 cua-router 均已就绪
+```
 
 ## 依赖
 
@@ -28,15 +67,18 @@ description: >
 
 #### 首次安装 vendor（仅需一次）
 
-从本机 ChatGPT.app 提取 `codex`（app-server）、`cua_node`（含 `@oai/sky`）与 Computer Use 客户端到技能包：
+vendor 会在以下时机**自动 bootstrap**（优先 ChatGPT.app 提取，否则从 GitHub Release 下载）：
+
+- `bash scripts/install-remote.sh` / `install-full.sh`
+- `bash scripts/daemon.sh start`（vendor 缺失时自动调用 `install-full.sh --vendor-mode auto`）
+
+也可手动从本机 ChatGPT.app 提取：
 
 ```bash
 bash "$SKILL_ROOT/scripts/setup-vendor.sh"
 ```
 
-前提：本机已安装 ChatGPT/Codex 桌面应用，且已在 Codex 中安装过 Computer Use 插件（`~/.codex/computer-use/` 存在）。
-
-`start.sh` 会在 vendor 缺失时自动调用上述脚本。
+前提：本机已安装 ChatGPT/Codex 桌面应用，且已在 Codex 中安装过 Computer Use 插件（`~/.codex/computer-use/` 存在）。无 ChatGPT 时使用 Release 下载即可。
 
 #### 服务依赖
 
@@ -54,6 +96,8 @@ bash "$SKILL_ROOT/scripts/setup-vendor.sh"
 | `{SKILL_ROOT}/scripts/daemon.sh` | 守护进程管理（推荐：`start` / `status` / `restart` / `stop`） |
 | `{SKILL_ROOT}/scripts/exec.sh` | `/exec` 封装：自动启动服务、发送 JS、解析 `nodeRepl.write` 输出 |
 | `{SKILL_ROOT}/scripts/install-cursor.sh` | 安装到 `~/.cursor/skills` 并 Pin 到 `/` 菜单前列 |
+| `{SKILL_ROOT}/scripts/install-remote.sh` | Agent 远程一键安装（slim + vendor + Cursor 注册） |
+| `{SKILL_ROOT}/scripts/install-full.sh` | 完整安装（vendor bootstrap + Cursor 注册） |
 | `{SKILL_ROOT}/scripts/computer-use-client.mjs` | sky runtime 入口模块，bootstrap 时 import |
 | `{SKILL_ROOT}/scripts/setup-vendor.sh` | 从 ChatGPT.app 提取 vendor 依赖 |
 | `{SKILL_ROOT}/vendor/codex/bin/codex` | 内置 app-server 可执行文件 |
@@ -74,7 +118,7 @@ bash "$SKILL_ROOT/scripts/setup-vendor.sh"
 
 - macOS + Chrome（bundle id: `com.google.Chrome`）
 - Python 3（用于运行 cua-router.py）
-- 首次 setup-vendor 时需本机有 ChatGPT.app（仅提取用，运行时不再依赖）
+- vendor 来源（二选一，auto 模式自动选择）：ChatGPT.app 提取，或 GitHub Release 预构建 tarball
 
 ## 启动与检查 cua-router
 
@@ -94,7 +138,7 @@ bash "$SKILL_ROOT/scripts/daemon.sh" restart    # 卡死时重启
 bash "$SKILL_ROOT/scripts/daemon.sh" stop       # 停止
 ```
 
-`daemon.sh start` 会：检查 `/exec` 健康 → vendor 缺失时自动 setup → `nohup` 启动 → 等待就绪（最多 30s）。
+`daemon.sh start` 会：检查 `/exec` 健康 → vendor 缺失时自动 bootstrap（ChatGPT 提取或 Release 下载）→ `nohup` 启动 → 等待就绪（最多 45s）。
 
 #### 手动启动（等价于 daemon.sh start）
 
@@ -105,7 +149,7 @@ nohup python3 "$SKILL_ROOT/scripts/cua-router.py" --port 18901 \
 echo $! > /tmp/cua-router.pid
 ```
 
-首次运行前执行一次：`bash "$SKILL_ROOT/scripts/setup-vendor.sh"`
+首次运行前若 vendor 缺失，`daemon.sh start` 会自动 bootstrap；也可手动执行 `bash "$SKILL_ROOT/scripts/install-full.sh"`。
 
 #### Agent 执行 sky 操作前的标准流程
 

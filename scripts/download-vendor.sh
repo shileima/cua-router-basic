@@ -79,10 +79,7 @@ curl -fsSL "$URL" -o "$archive"
 
 if curl -fsSL "$checksum_url" -o "$tmpdir/vendor.tar.gz.sha256" 2>/dev/null; then
   info "verifying sha256"
-  (
-    cd "$tmpdir"
-    shasum -a 256 -c vendor.tar.gz.sha256
-  )
+  verify_sha256_sidecar "$archive" "$tmpdir/vendor.tar.gz.sha256"
 else
   warn "no checksum file at $checksum_url — skipping sha256 verify"
 fi

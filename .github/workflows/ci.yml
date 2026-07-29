@@ -18,6 +18,10 @@ jobs:
           test -f README.md
           test -f .meta.json
           test -f scripts/install-full.sh
+          test -f scripts/install-remote.sh
+          test -f .cursor-plugin/plugin.json
+          test -f .claude-plugin/plugin.json
+          test -f .claude-plugin/marketplace.json
           test -f vendor/README.md
           test -f vendor/.gitkeep
 

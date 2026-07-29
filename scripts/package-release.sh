@@ -64,7 +64,10 @@ tar -czf "$slim_path" \
   vendor/README.md \
   vendor/.gitkeep
 
-shasum -a 256 "$slim_path" > "$slim_path.sha256"
+(
+  cd "$OUT_DIR"
+  shasum -a 256 "$(basename "$slim_path")"
+) > "$slim_path.sha256"
 
 if [ "$SKIP_VENDOR" -eq 1 ]; then
   info "skip-vendor set; slim only"
@@ -81,7 +84,10 @@ vendor_path="$OUT_DIR/$vendor_name"
 info "packaging vendor ($PLATFORM) -> $vendor_path"
 tar -czf "$vendor_path" -C "$SKILL_ROOT" vendor
 
-shasum -a 256 "$vendor_path" > "$vendor_path.sha256"
+(
+  cd "$OUT_DIR"
+  shasum -a 256 "$(basename "$vendor_path")"
+) > "$vendor_path.sha256"
 
 {
   cat "$slim_path.sha256"

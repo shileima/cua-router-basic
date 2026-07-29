@@ -9,7 +9,17 @@ cua-router + sky Computer Use API 基础技能。封装 macOS 上通过 cua-rout
 
 ## 快速安装
 
-### 方式 A：Git clone + 一键安装（推荐）
+### 方式 A：Agent 远程一键安装（推荐）
+
+无需预先 git clone，Agent 或用户可直接执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shileima/cua-router-basic/main/scripts/install-remote.sh | bash
+```
+
+脚本会自动：下载 slim 技能包 → bootstrap vendor（ChatGPT 提取或 Release 下载）→ 注册到 `~/.cursor/skills` 并 Pin。
+
+### 方式 B：Git clone + 一键安装
 
 ```bash
 git clone git@github.com:shileima/cua-router-basic.git
@@ -23,7 +33,29 @@ bash scripts/install-full.sh
 3. 否则 → 从 [GitHub Releases](https://github.com/shileima/cua-router-basic/releases) 下载 vendor
 4. 注册到 `~/.cursor/skills` 并 Pin 到 `/` 菜单
 
-### 方式 B：仅安装技能本体（Slim）
+### 方式 C：Plugin 安装（Cursor / Claude Code）
+
+**Cursor**：
+
+```
+/add-plugin shileima/cua-router-basic
+```
+
+**Claude Code**（添加 marketplace 后）：
+
+```
+/plugin marketplace add shileima/cua-router-basic
+/plugin install cua-router-basic@cua-router-basic-dev
+```
+
+Plugin 注册 slim 技能包；首次使用前执行 vendor bootstrap：
+
+```bash
+bash ~/.cursor/skills/cua-router-basic/scripts/install-full.sh --vendor-mode auto
+# 或直接 daemon.sh start（会自动 bootstrap vendor）
+```
+
+### 方式 D：仅安装技能本体（Slim）
 
 适合 CI 或已有 vendor 的场景：
 
@@ -34,10 +66,12 @@ bash ~/.automan/skills/cua-router-basic/scripts/download-vendor.sh
 bash ~/.automan/skills/cua-router-basic/scripts/install-cursor.sh
 ```
 
-### 方式 C：指定安装目录
+### 方式 E：指定安装目录
 
 ```bash
 bash scripts/install-full.sh --target ~/.automan/skills/cua-router-basic
+# 或
+bash scripts/install-remote.sh --target ~/.automan/skills/cua-router-basic
 ```
 
 ---
@@ -65,7 +99,10 @@ bash scripts/exec.sh 'nodeRepl.write("ok")'
 cua-router-basic/
 ├── SKILL.md              # Agent 技能规范（Cursor 读取）
 ├── .meta.json            # 版本元信息
+├── .cursor-plugin/       # Cursor Plugin manifest
+├── .claude-plugin/       # Claude Code Plugin + marketplace
 ├── scripts/              # 安装、服务、发布脚本
+│   ├── install-remote.sh # Agent 远程一键安装
 │   ├── install-full.sh   # 完整安装
 │   ├── install-slim.sh   # 仅技能本体
 │   ├── download-vendor.sh

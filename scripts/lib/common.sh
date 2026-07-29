@@ -90,7 +90,40 @@ slim_archive_name() {
   printf 'cua-router-basic-slim-%s.tar.gz' "$version"
 }
 
+default_slim_url() {
+  local version="$1"
+  printf '%s/%s' "$(default_release_base "$version")" "$(slim_archive_name "$version")"
+}
+
+default_git_url() {
+  printf 'https://github.com/%s.git' "$(github_repo)"
+}
+
+default_install_dir() {
+  printf '%s' "${CUA_ROUTER_INSTALL_DIR:-$HOME/.cursor/skills/cua-router-basic}"
+}
+
+fetch_remote_version() {
+  local repo meta_url
+  repo="$(github_repo)"
+  meta_url="https://raw.githubusercontent.com/${repo}/main/.meta.json"
+  curl -fsSL "$meta_url" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])'
+}
+
 ensure_command() {
   local cmd="$1"
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
+}
+
+verify_sha256_sidecar() {
+  local file="$1"
+  local sidecar="$2"
+  local expected actual
+  expected="$(awk '{print $1; exit}' "$sidecar")"
+  [ -n "$expected" ] || die "empty checksum sidecar: $sidecar"
+  ensure_command shasum
+  actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+  if [ "$expected" != "$actual" ]; then
+    die "checksum mismatch for $(basename "$file") (expected $expected, got $actual)"
+  fi
 }

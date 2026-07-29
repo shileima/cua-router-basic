@@ -5,6 +5,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
 PORT="${CUA_ROUTER_PORT:-18901}"
 PID_FILE="${CUA_ROUTER_PID_FILE:-/tmp/cua-router.pid}"
 LOG_FILE="${CUA_ROUTER_LOG_FILE:-/tmp/cua-router.log}"
@@ -48,9 +50,9 @@ cmd_start() {
     fi
   fi
 
-  if [ ! -x "$SKILL_ROOT/vendor/codex/bin/codex" ]; then
-    echo "[cua-router] vendor missing, running setup-vendor.sh..." >&2
-    bash "$SCRIPT_DIR/setup-vendor.sh"
+  if ! vendor_ready "$SKILL_ROOT"; then
+    echo "[cua-router] vendor missing, bootstrapping (auto)..." >&2
+    bash "$SCRIPT_DIR/install-full.sh" --skill-root "$SKILL_ROOT" --vendor-mode auto --no-cursor
   fi
 
   nohup python3 "$SCRIPT_DIR/cua-router.py" --port "$PORT" >> "$LOG_FILE" 2>&1 &

@@ -76,7 +76,11 @@ ensure_command git
 
 repo="$(github_repo)"
 if [ "$SKIP_GIT" -eq 0 ]; then
-  git -C "$COMMON_SKILL_ROOT" add .meta.json
+  git -C "$COMMON_SKILL_ROOT" add \
+    .meta.json \
+    .cursor-plugin/plugin.json \
+    .claude-plugin/plugin.json \
+    .claude-plugin/marketplace.json
   if ! git -C "$COMMON_SKILL_ROOT" diff --cached --quiet; then
     git -C "$COMMON_SKILL_ROOT" commit -m "chore: release ${VERSION}"
   fi

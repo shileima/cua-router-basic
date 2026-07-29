@@ -173,8 +173,10 @@ bash scripts/package-release.sh
 ### 版本号管理
 
 ```bash
-bash scripts/bump-version.sh 0.4.0   # 仅更新 .meta.json
+bash scripts/bump-version.sh 0.4.0   # 同步 .meta.json 与 Plugin manifest 版本号
 ```
+
+会自动更新：`.meta.json`、`.cursor-plugin/plugin.json`、`.claude-plugin/plugin.json`、`.claude-plugin/marketplace.json`。
 
 ---
 

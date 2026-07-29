@@ -1,0 +1,22 @@
+# Local runtime state (CODEX_HOME) — regenerated on first start
+runtime/
+
+# Vendor binaries (~735 MB) — extracted locally or downloaded from release
+vendor/*
+!vendor/README.md
+!vendor/.gitkeep
+
+# Release artifacts
+dist/
+*.tar.gz
+*.tar.gz.sha256
+
+# macOS / editor
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Process logs (daemon.sh defaults to /tmp; ignore if redirected here)
+*.log

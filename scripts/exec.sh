@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# 通过 cua-router /exec 端点执行 JS，并解析 nodeRepl.write 输出。
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SKILL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PORT="${CUA_ROUTER_PORT:-18901}"
+EXEC_URL="http://127.0.0.1:${PORT}/exec"
+
+TIMEOUT_MS=30000
+OUTPUT_MODE="text"
+ENSURE_START=1
+CODE_FILE=""
+
+usage() {
+  cat <<EOF
+Usage: $0 [options] [code]
+
+Execute JavaScript via cua-router /exec endpoint.
+
+Options:
+  -t, --timeout MS    Timeout in milliseconds (default: 30000)
+  -f, --file PATH     Read code from file
+  --json              Print full JSON response
+  --text              Print content[0].text only (default)
+  --no-start          Do not auto-start cua-router via daemon.sh
+  -h, --help          Show this help
+
+Notes:
+  - node_repl does NOT return the last expression; use nodeRepl.write(...) to output.
+  - See SKILL.md "执行 JS 与读取结果" for details.
+
+Examples:
+  $0 'nodeRepl.write("ok")'
+  $0 -t 60000 -f navigate.js
+  $0 --json '{ const s = await sky.get_app_state({ app: "com.google.Chrome", disableDiff: true }); nodeRepl.write(JSON.stringify({ textLen: s.text.length })); }'
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -t|--timeout)
+      TIMEOUT_MS="${2:?missing timeout value}"
+      shift 2
+      ;;
+    -f|--file)
+      CODE_FILE="${2:?missing file path}"
+      shift 2
+      ;;
+    --json)
+      OUTPUT_MODE="json"
+      shift
+      ;;
+    --text)
+      OUTPUT_MODE="text"
+      shift
+      ;;
+    --no-start)
+      ENSURE_START=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+read_code() {
+  if [ -n "$CODE_FILE" ]; then
+    if [ ! -f "$CODE_FILE" ]; then
+      echo "[exec] file not found: $CODE_FILE" >&2
+      exit 1
+    fi
+    cat "$CODE_FILE"
+    return
+  fi
+
+  if [ $# -gt 0 ]; then
+    printf '%s' "$*"
+    return
+  fi
+
+  if [ ! -t 0 ]; then
+    cat
+    return
+  fi
+
+  usage >&2
+  exit 1
+}
+
+ensure_service() {
+  if [ "$ENSURE_START" -eq 1 ]; then
+    bash "$SCRIPT_DIR/daemon.sh" start >/dev/null
+  fi
+}
+
+CODE="$(read_code "$@")"
+if [ -z "$CODE" ]; then
+  echo "[exec] empty code" >&2
+  exit 1
+fi
+
+ensure_service
+
+RESP="$(python3 - "$EXEC_URL" "$TIMEOUT_MS" "$CODE" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+url, timeout_ms, code = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+payload = json.dumps({"code": code, "timeout_ms": timeout_ms}).encode()
+req = urllib.request.Request(
+    url,
+    data=payload,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=max(timeout_ms / 1000 + 10, 30)) as resp:
+        print(resp.read().decode())
+except urllib.error.HTTPError as exc:
+    print(exc.read().decode(), file=sys.stderr)
+    raise SystemExit(exc.code)
+except urllib.error.URLError as exc:
+    print(f"[exec] request failed: {exc.reason}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+)"
+
+if [ "$OUTPUT_MODE" = "json" ]; then
+  printf '%s\n' "$RESP"
+  exit 0
+fi
+
+python3 - "$RESP" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1]
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError as exc:
+    print(f"[exec] invalid JSON response: {exc}", file=sys.stderr)
+    print(raw, file=sys.stderr)
+    raise SystemExit(1)
+
+if data.get("isError"):
+    text = ""
+    content = data.get("content") or []
+    if content and isinstance(content[0], dict):
+        text = content[0].get("text", "")
+    print(text or json.dumps(data, ensure_ascii=False), file=sys.stderr)
+    raise SystemExit(1)
+
+content = data.get("content") or []
+if not content:
+    print("", end="")
+    raise SystemExit(0)
+
+parts = []
+for item in content:
+    if isinstance(item, dict) and item.get("type") == "text":
+        parts.append(item.get("text", ""))
+
+print("\n".join(parts), end="")
+if parts:
+    print()
+PY

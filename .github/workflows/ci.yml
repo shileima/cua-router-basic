@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tracked files
+        run: |
+          test -f SKILL.md
+          test -f README.md
+          test -f .meta.json
+          test -f scripts/install-full.sh
+          test -f vendor/README.md
+          test -f vendor/.gitkeep
+
+      - name: Shell syntax check
+        run: |
+          find scripts -name '*.sh' -print0 | while IFS= read -r -d '' f; do
+            bash -n "$f"
+          done
+
+      - name: Package slim tarball
+        run: bash scripts/package-release.sh --skip-vendor
+
+      - name: Test slim install
+        run: |
+          TARGET="$RUNNER_TEMP/cua-router-basic-test"
+          bash scripts/install-slim.sh --target "$TARGET" --no-cursor --force
+          test -f "$TARGET/SKILL.md"
+          test -x "$TARGET/scripts/daemon.sh"
+          ! test -x "$TARGET/vendor/codex/bin/codex"
+
+      - name: Verify version in meta
+        run: |
+          VERSION="$(python3 -c 'import json; print(json.load(open(".meta.json"))["version"])')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        id: meta
+
+      - name: Upload slim artifact (CI only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: slim-${{ steps.meta.outputs.version }}
+          path: dist/cua-router-basic-slim-*.tar.gz
+          if-no-files-found: error

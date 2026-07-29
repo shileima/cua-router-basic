@@ -1,0 +1,25 @@
+name: Release Check
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  verify-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Match tag with .meta.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION="$(python3 -c 'import json; print(json.load(open(".meta.json"))["version"])')"
+          echo "tag=$TAG version=$VERSION"
+          test "$TAG" = "$VERSION"
+
+      - name: Remind maintainer to upload vendor
+        run: |
+          REPO="${{ github.repository }}"
+          TAG="${{ github.ref_name }}"
+          echo "::notice title=Release::Tag ${TAG} pushed. Maintainer must run 'bash scripts/release.sh ${TAG#v}' locally to upload vendor tarball to https://github.com/${REPO}/releases/tag/${TAG}"

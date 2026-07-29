@@ -12,6 +12,9 @@ description: >
   「用 sky 操控 Chrome」「用 sky 填表单」「用 sky 自动化操作浏览器」
   「cua-router 服务检查」「computer use 依赖路径」「sky runtime 初始化」
   「安装 cua-router-basic」「setup computer use」「安装 computer use 技能」
+  「set_value 不生效」「type_text 和 set_value 区别」「文本输入区 地址栏」
+  「弹层识别不到」「浮层漏掉」「AX Tree 对话框」「overlay 定位」
+  「双击不生效」「canvas 点击」「contenteditable 双击」「React Flow 节点」
 
   开发新的 sky/cua-router 技能时，使用本技能作为公共规范参照，不需要在每个技能里重复描述依赖和操作规范。
   本技能不直接执行业务操作，只提供依赖说明、初始化代码和操作规范。
@@ -285,11 +288,32 @@ bash "$SKILL_ROOT/scripts/install-cursor.sh" --unpin
 
 #### findIdx — 从 AX Tree 文本按关键字定位 element_index
 
+**必须在完整 `axText` 上搜索**，禁止按 idx 区间切片（如 `20-80`）。弹层、对话框、Portal 节点常挂在**高 idx**（如 #313），低区间扫描必然漏掉。
+
 ```js
 function findIdx(axText, ...keywords) {
   const line = axText.split("\n").find(l => keywords.every(k => l.includes(k)));
   if (!line) return null;
   return parseInt(line.match(/^\s*(\d+)/)[1]);
+}
+```
+
+#### findAllIdx — 列出所有匹配行（弹层候选）
+
+```js
+function findAllIdx(axText, ...keywords) {
+  return axText.split("\n")
+    .filter(l => keywords.every(k => l.includes(k)))
+    .map(l => ({ idx: parseInt(l.match(/^\s*(\d+)/)[1]), line: l.trim() }));
+}
+```
+
+#### findFocusedIdx — 读取当前焦点元素（对话框常自动聚焦）
+
+```js
+function findFocusedIdx(axText) {
+  const focusedLine = axText.split("\n").find(l => /focused UI element is/.test(l));
+  return focusedLine ? parseInt(focusedLine.match(/\b(\d+)\b/)?.[1]) : null;
 }
 ```
 
@@ -328,9 +352,85 @@ const url = (s.text.match(/URL: ([^\s,\n]+)/) || [, ""])[1];
 #### 获取 focused 元素 index（对话框自动聚焦时使用）
 
 ```js
+const idx = findFocusedIdx(s.text);
+// 或内联：
 const focusedLine = s.text.split("\n").find(l => /focused UI element is/.test(l));
 const idx = parseInt((focusedLine || "").match(/\b(\d+)\b/)?.[1]);
 ```
+
+#### 弹层 / 浮层 / 对话框定位
+
+AX Tree 的 **idx 与视觉层级无关**：主页面内容通常在低 idx，**后渲染的弹层、调试浮层、Modal、Drawer 常 append 到树末尾（高 idx）**。只扫 `idx 20-80` 会系统性漏掉弹层。
+
+**禁止做法**：
+
+```js
+// ❌ 按 idx 区间切片 — 弹层在 #313 时完全不可见
+const lines = s.text.split("\n").filter(l => {
+  const idx = parseInt(l.match(/^\s*(\d+)/)?.[1]);
+  return idx >= 20 && idx <= 80;
+});
+```
+
+**推荐流程**（触发弹层的 click 之后，同一段或下一段 `/exec` 内）：
+
+```js
+{
+  function findIdx(axText, ...keywords) {
+    const line = axText.split("\n").find(l => keywords.every(k => l.includes(k)));
+    if (!line) return null;
+    return parseInt(line.match(/^\s*(\d+)/)[1]);
+  }
+  function findAllIdx(axText, ...keywords) {
+    return axText.split("\n")
+      .filter(l => keywords.every(k => l.includes(k)))
+      .map(l => ({ idx: parseInt(l.match(/^\s*(\d+)/)[1]), line: l.trim() }));
+  }
+  function findFocusedIdx(axText) {
+    const line = axText.split("\n").find(l => /focused UI element is/.test(l));
+    return line ? parseInt(line.match(/\b(\d+)\b/)?.[1]) : null;
+  }
+
+  const s = await sky.get_app_state({ app: "com.google.Chrome", disableDiff: true });
+
+  // 1. 优先看焦点（Modal 打开时常自动聚焦首项）
+  const focusedIdx = findFocusedIdx(s.text);
+
+  // 2. 全文关键词搜索 — 在完整 s.text 上，不截断 idx
+  const overlayIdx = findIdx(s.text, "调试", "按钮")
+    ?? findIdx(s.text, "确定", "按钮")
+    ?? findIdx(s.text, "关闭", "按钮");
+
+  // 3. 首次未命中：扩大候选，把匹配行传回 Agent 二次判断
+  const overlayKeywords = ["调试", "dialog", "Dialog", "alert", "Modal", "弹窗", "浮层", "sheet"];
+  const candidates = overlayKeywords.flatMap(kw => findAllIdx(s.text, kw))
+    .filter((c, i, arr) => arr.findIndex(x => x.idx === c.idx) === i)
+    .slice(0, 15);
+
+  nodeRepl.write(JSON.stringify({
+    textLen: s.text.length,
+    focusedIdx,
+    overlayIdx,
+    candidates,
+    hint: candidates.length === 0 ? "expand keywords on full axText, do not slice by idx range" : undefined,
+  }));
+}
+```
+
+**定位策略优先级**：
+
+| 优先级 | 方法 | 适用场景 |
+|--------|------|----------|
+| 1 | `findFocusedIdx(s.text)` | 对话框打开后焦点已在弹层内 |
+| 2 | `findIdx(s.text, …keywords)` 全文搜索 | 已知按钮/标题文案 |
+| 3 | `findAllIdx` + 传回 Agent | 首次关键词未命中，需人工选候选 |
+| 4 | 读 `s.screenshot.url` 截图 | AX Tree 无弹层节点时的兜底 |
+
+**关键规则**：
+
+- 每次可能弹出浮层的操作后，**必须**重新 `get_app_state({ disableDiff: true })`
+- 搜索范围 = **完整** `s.text`，`textLen` 可达数千行；idx 大不代表「不重要」
+- 第一次 `findIdx` 返回 `null` **不等于弹层不存在**，应换关键词或 `findAllIdx` 全文检索，**禁止**缩小 idx 区间重试
 
 ## 标准操作规范
 
@@ -342,11 +442,163 @@ const idx = parseInt((focusedLine || "").match(/\b(\d+)\b/)?.[1]);
 | **URL 导航** | `set_value(addrIdx, url)` + `press_key("Return")` | `press_key("Cmd+L")` + `type_text(url)`（会混入 `l` 字符）|
 | **输入中文 / 特殊字符** | `set_value(element_index, text)` | `type_text(text)`（IME 与特殊字符输入异常）|
 | **点击按钮 / 链接** | `click({ element_index })` 从 AX Tree 动态定位 | 硬编码坐标（窗口尺寸变化会失效）|
+| **双击 / Canvas 节点** | `Escape` → 等 600ms → 对节点内 **`文本`/图片** 子元素 `click({ click_count: 2 })` | 用 `clickCount`；未 Escape；双击 `container`；坐标双击 |
 | **变量声明** | 每段代码用 `{ ... }` 块作用域包裹 | 顶层 `const/let/var`（Node REPL session 内重复声明报错）|
 | **获取 AX Tree** | `get_app_state({ disableDiff: true })`，每次操作前重新获取 | 省略 `disableDiff: true`（页面无变化时仅返回 "no change" 短文本）；复用旧 AX Tree |
+| **元素搜索** | `findIdx` / `findAllIdx` 在**完整** `s.text` 上关键词全文搜索 | 按 idx 区间切片（如 20-80）；假设弹层一定在低 idx |
+| **弹层 / 对话框** | 操作后重新取树 → 先 `findFocusedIdx` → 再全文 `findIdx` | 第一次 null 就放弃；只在主内容区低 idx 查找 |
 | **触发 UI 刷新后截图** | 先执行任意操作，再 `get_app_state` | 无操作直接调（可能返回旧截图）|
 
 `disableDiff` 说明：默认 `false` 时，若页面 accessibility tree 相对上次无变化，`s.text` 仅为 `"There has been no change in the accessibility tree..."`，**无法用于元素定位**。解析 AX Tree 时必须传 `disableDiff: true` 获取完整树。
+
+#### set_value 与 type_text 的应用场景
+
+两者底层机制不同，**不可互换**：
+
+| | `set_value` | `type_text` |
+|---|-------------|-------------|
+| **机制** | 通过 Accessibility API 直接写入元素的 AXValue | 向当前焦点模拟键盘逐字输入 |
+| **需要 element_index** | ✅ 必须指定 | ❌ 写入当前焦点，不指定元素 |
+| **URL / 特殊字符**（`://`、`?`、`=`） | ✅ 可靠 | ❌ 常丢失（如 `https//` 缺 `:`） |
+| **中文 / IME** | ✅ 可靠 | ❌ 组合输入、选字异常 |
+| **适用控件** | 原生可编辑控件（地址栏、`<input>`、`<textarea>`） | 仅当控件**不支持** set_value 且无特殊字符时的兜底 |
+
+**决策流程**（按优先级）：
+
+1. **Chrome 地址栏导航** → 只用 `set_value` + `Return`（见下方地址栏示例）
+2. **页面普通表单**（AX 行含 `文本栏` + 有意义的 Description/Placeholder/Value）→ 优先 `set_value`
+3. **含 URL、中文、符号的内容** → 只用 `set_value`，禁止 `type_text`
+4. **`type_text` 仅作最后兜底**：纯 ASCII、无特殊字符、且已 `click` 聚焦目标元素；写入后必须用截图或页面变化验证，**不能**只看 AX Value
+
+#### 常见误判：文本输入区 ≠ 地址栏
+
+Chrome AX Tree 中常有多个 `(settable, string)` 元素，Agent 极易定位错误：
+
+| AX 特征 | 实际控件 | set_value 是否有效 |
+|---------|----------|-------------------|
+| `Description: 地址和搜索栏` | Chrome 地址栏（Omnibox） | ✅ 有效 |
+| `文本栏 … Placeholder/Description: …` | 页面原生 `<input>` | ✅ 通常有效 |
+| `文本输入区` / `Description: 编辑器容器` | Monaco、CodeMirror、contenteditable | ❌ **无效**（API 不报错但 Value 不变） |
+| `for screen reader` | 辅助技术隐藏字段 | ❌ 跳过 |
+
+典型错误：Agent 看到「文本输入区 (settable, string)」以为可填 URL，对 Monaco 编辑器调用 `set_value` → AX Value 仍为空 → 误判「set_value 不生效」→ 改 `type_text` → `:` 等字符丢失。
+
+**元素定位规则**：
+
+```js
+// ✅ 地址栏（URL 导航唯一正确目标）
+const addrLine = axText.split("\n").find(l => /settable, string/.test(l) && /地址/.test(l));
+
+// ✅ 页面普通输入框（按 Description/Placeholder 匹配业务字段）
+const fieldLine = axText.split("\n").find(l =>
+  /settable, string/.test(l) && /关键词/.test(l) && !/地址|编辑器|screen reader|文本输入区/.test(l)
+);
+
+// ❌ 禁止用「文本输入区」填 URL 或当作地址栏
+const badLine = axText.split("\n").find(l => /文本输入区/.test(l));
+```
+
+**写入结果验证**：
+
+- **地址栏 / 原生 input**：可在同一段 `/exec` 内重新 `get_app_state`，检查行内 `Value: …` 是否更新
+- **Monaco / 富文本编辑器**：AX Value **不可信**（常为空），须用截图或页面 DOM 变化确认；若 set_value 无效，**不要** fallback 到 type_text 填 URL，应换定位策略或改走地址栏导航
+
+#### Canvas / 流程图节点：双击打开配置面板
+
+Canvas 节点外层是 `container`，父层常为 `contenteditable`。直接对 container 双击会被**文本选中**消费掉，React `onDoubleClick` 不触发。已验证的**标准双击流程**如下（三步缺一不可）：
+
+| 步骤 | 动作 | 说明 |
+|------|------|------|
+| 1 | `press_key("Escape")` | **必须先**退出 contenteditable 文本编辑/光标模式 |
+| 2 | 等待 ~600ms | `await new Promise(r => setTimeout(r, 600))` |
+| 3 | `click({ element_index, click_count: 2 })` | 双击节点**内部子元素**，不是 container |
+
+**三个关键规则**：
+
+1. **Escape 是必要的** — 未 Escape 时双击会触发词语选中（`Selected text`），配置面板不会弹出
+2. **参数名是 `click_count`**（snake_case），**不是** `clickCount`（camelCase 会被忽略，等同单击）
+3. **双击目标是节点内的 `文本` / `未加标签的图片` 子元素**，**不是**外层 `container`
+
+**原因链**（理解为何必须按上述流程）：
+
+| 层级 | 现象 | 机制 |
+|------|------|------|
+| AX Tree | 节点卡片是 `container`，无 AXPress | 须 fallback 鼠标事件，且须点对子元素 |
+| 浏览器 | 父层 contenteditable 有焦点 | 双击 = 词语选中；Escape 先退出编辑态 |
+| API | 传 `clickCount` 无效 | sky 只认 `click_count`（见 `ClickInput.click_count`） |
+
+**标准代码模板**（同一段 `/exec` 内完成）：
+
+```js
+{
+  function findIdx(axText, ...keywords) {
+    const line = axText.split("\n").find(l => keywords.every(k => l.includes(k)));
+    if (!line) return null;
+    return parseInt(line.match(/^\s*(\d+)/)[1]);
+  }
+  // 找节点内可双击的子元素：精确匹配「文本 N」，其次「未加标签的图片」
+  function findNodeDblClickTarget(axText, nodeLabel) {
+    const exact = axText.split("\n").find(l =>
+      new RegExp(`^\\s+\\d+\\s+文本\\s+${nodeLabel}\\b`).test(l)
+    );
+    if (exact) return parseInt(exact.match(/^\s*(\d+)/)[1]);
+    return findIdx(axText, "未加标签的图片");
+  }
+
+  // Step 1: Escape 退出编辑态
+  await sky.press_key({ app: "com.google.Chrome", key: "Escape" });
+  await new Promise(r => setTimeout(r, 600));
+
+  const s = await sky.get_app_state({ app: "com.google.Chrome", disableDiff: true });
+
+  // Step 2: 定位节点内子元素（例：节点编号「3」→ 找「文本 3」或图标）
+  const targetIdx = findNodeDblClickTarget(s.text, "3")
+    ?? findIdx(s.text, "文本", "3")
+    ?? findIdx(s.text, "未加标签的图片");
+
+  if (!targetIdx) {
+    nodeRepl.write(JSON.stringify({ error: "node dblclick target not found", hint: "search full axText for 文本 N or 未加标签的图片" }));
+  } else {
+    // Step 3: click_count: 2 双击（必须是 snake_case）
+    await sky.click({ app: "com.google.Chrome", element_index: targetIdx, click_count: 2 });
+    await new Promise(r => setTimeout(r, 1500));
+
+    const s2 = await sky.get_app_state({ app: "com.google.Chrome", disableDiff: true });
+    const panelLines = s2.text.split("\n").filter(l =>
+      /LLM|属性定义|捕获|新建/.test(l) && (/按钮/.test(l) || /文本栏/.test(l))
+    );
+    nodeRepl.write(JSON.stringify({
+      dblclickTarget: targetIdx,
+      panelOpened: panelLines.length > 0,
+      panelLines: panelLines.slice(0, 10),
+    }));
+  }
+}
+```
+
+**禁止做法**：
+
+```js
+// ❌ camelCase — click_count 被忽略，等同单击
+await sky.click({ app: "com.google.Chrome", element_index: 284, clickCount: 2 });
+
+// ❌ 未 Escape 直接双击 container
+await sky.click({ app: "com.google.Chrome", element_index: 57, click_count: 2 });
+
+// ❌ 坐标双击 — 仍会被 contenteditable 词语选中消费
+await sky.click({ app: "com.google.Chrome", x: 560, y: 360, click_count: 2 });
+```
+
+**失败后的 fallback**（标准流程仍无效时）：
+
+| 优先级 | 做法 |
+|--------|------|
+| 1 | 确认已 Escape + 用的是 `click_count` + 目标是 `文本`/图片子元素 |
+| 2 | 全文搜索工具栏等价按钮（`findIdx(s.text, "编辑", "按钮")`） |
+| 3 | 单击选中节点 + `press_key("Return")` / `F2` |
+| 4 | 上报阻塞，附 `findAllIdx` 候选供用户判断 |
+
+**验证双击成功**：重新 `get_app_state` 后应出现配置面板相关节点（如「捕获」「新建 LLM」「属性定义」等按钮/文本栏）。若出现 `Selected text` 说明未 Escape 或点错了 container。
 
 #### 地址栏 index 获取（Chrome URL 导航标准方式）
 

@@ -1,6 +1,6 @@
 {
   "name": "cua-router-basic",
   "description": "cua-router + sky Computer Use API 公共基础技能，封装依赖声明、bootstrap 流程、辅助函数和操作规范，供其他 sky/cua-router 技能开发参照",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "source": "user"
 }

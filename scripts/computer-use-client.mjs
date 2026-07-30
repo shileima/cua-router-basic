@@ -25,6 +25,44 @@ const SKY_MAC_CLIENT_ENTRYPOINT = [
 
 /** @typedef {{ globals?: ComputerUseGlobals }} SetupComputerUseRuntimeOptions */
 
+/** @param {string} key */
+export function normalizePressKey(key) {
+  /** @type {Record<string, string>} */
+  const ALIASES = {
+    cmd: "Command",
+    command: "Command",
+    meta: "Command",
+    super: "Command",
+    ctrl: "Control_L",
+    control: "Control_L",
+    shift: "Shift_L",
+    alt: "Alt_L",
+    option: "Alt_L",
+  };
+
+  return key
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => ALIASES[part.toLowerCase()] ?? part)
+    .join("+");
+}
+
+/** @param {ReturnType<import("@oai/sky").create_client>} sky */
+function wrapSkyClient(sky) {
+  const originalPressKey = sky.press_key.bind(sky);
+  return Object.freeze({
+    ...sky,
+    press_key(input) {
+      const normalized =
+        typeof input?.key === "string"
+          ? { ...input, key: normalizePressKey(input.key) }
+          : input;
+      return originalPressKey(normalized);
+    },
+  });
+}
+
 async function importPackagedCreateClient() {
   const moduleDirs = requireNodeReplEnv()["NODE_REPL_NODE_MODULE_DIRS"];
   const searchRoots = typeof moduleDirs === "string" ? moduleDirs.split(path.delimiter) : [];
@@ -65,7 +103,7 @@ export async function setupComputerUseRuntime({ globals = globalThis } = {}) {
   }
 
   const createClient = await importPackagedCreateClient();
-  const sky = Object.freeze(createClient({ target: "mac" }));
+  const sky = wrapSkyClient(createClient({ target: "mac" }));
   Reflect.set(globalThis, COMPUTER_USE_RUNTIME_KEY, sky);
   Reflect.set(globalThis, "sky", sky);
   Reflect.set(globals, "sky", sky);

@@ -449,7 +449,9 @@ const lines = s.text.split("\n").filter(l => {
 | 操作 | 正确方式 | 禁止方式 |
 |------|---------|---------|
 | **读取 `/exec` 结果** | `nodeRepl.write(...)` 或 `exec.sh` | 依赖块内最后一条表达式（HTTP 响应恒为空）|
-| **URL 导航** | `set_value(addrIdx, url)` + `press_key("Return")` | `press_key("Cmd+L")` + `type_text(url)`（会混入 `l` 字符）|
+| **URL 导航** | `set_value(addrIdx, url)` + `press_key("Return")` | `press_key("Command+L")` + `type_text(url)`（会混入 `l` 字符）|
+| **键盘快捷键** | `press_key({ key: "Command+v" })` 等 keysym 格式；bootstrap 会自动把 `Cmd`/`Meta`/`Ctrl`/`Shift`/`Alt`/`Option` 归一化 | 直接使用 `Cmd+V`、`Meta+v`、`Ctrl+c`（sky 原生不认，会报 `keyNotFound`）|
+| **粘贴文本到输入框** | 优先 `set_value(element_index, text)`；剪贴板粘贴用 `Command+v`（或 `Cmd+V`，已自动归一化） | 对不支持 set_value 的控件盲目 `type_text` 中文 |
 | **输入中文 / 特殊字符** | `set_value(element_index, text)` | `type_text(text)`（IME 与特殊字符输入异常）|
 | **点击按钮 / 链接** | `click({ element_index })` 从 AX Tree 动态定位 | 硬编码坐标（窗口尺寸变化会失效）|
 | **双击 / Canvas 节点** | `Escape` → 等 600ms → 对节点内 **`文本`/图片** 子元素 `click({ click_count: 2 })` | 用 `clickCount`；未 Escape；双击 `container`；坐标双击 |
@@ -460,6 +462,36 @@ const lines = s.text.split("\n").filter(l => {
 | **触发 UI 刷新后截图** | 先执行任意操作，再 `get_app_state` | 无操作直接调（可能返回旧截图）|
 
 `disableDiff` 说明：默认 `false` 时，若页面 accessibility tree 相对上次无变化，`s.text` 仅为 `"There has been no change in the accessibility tree..."`，**无法用于元素定位**。解析 AX Tree 时必须传 `disableDiff: true` 获取完整树。
+
+#### press_key 键名规范
+
+`sky.press_key({ key })` 使用 **X keysym 风格** 键名，用 `+` 连接组合键（如 `Control_L+c`、`Command+v`、`Return`）。
+
+| 常见写法 | sky 原生是否认 | bootstrap 归一化后 |
+|---------|--------------|-------------------|
+| `Command+v` / `command+V` | ✅ | — |
+| `Super_L+v` | ✅ | — |
+| `Cmd+V` / `Meta+v` | ❌ `keyNotFound("Cmd")` | ✅ → `Command+V` |
+| `Ctrl+c` / `Control+c` | ❌ | ✅ → `Control_L+c` |
+| `Shift+Tab` / `Alt+Tab` / `Option+v` | ❌ | ✅ → `Shift_L+Tab` / `Alt_L+Tab` / `Alt_L+v` |
+| `Return` / `Escape` / `F2` | ✅ | — |
+
+归一化在 `scripts/computer-use-client.mjs` 的 bootstrap 层自动完成，**无需**业务代码手动转换。修改该文件后需 `daemon.sh restart` 使新 session 生效。
+
+**粘贴示例**（IM / 聊天输入框）：
+
+```js
+{
+  const s1 = await sky.get_app_state({ app: "cn.neixin.pc", disableDiff: true });
+  const inputIdx = findIdx(s1.text, "文本输入区", "说点什么");
+  await sky.click({ app: "cn.neixin.pc", element_index: inputIdx });
+  await new Promise(r => setTimeout(r, 400));
+  // Cmd+V 会被自动归一化为 Command+V
+  await sky.press_key({ app: "cn.neixin.pc", key: "Cmd+V" });
+}
+```
+
+若控件支持 AX 写入，**仍优先** `set_value`（见下节），比剪贴板粘贴更可靠。
 
 #### set_value 与 type_text 的应用场景
 

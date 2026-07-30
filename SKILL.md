@@ -450,7 +450,7 @@ const lines = s.text.split("\n").filter(l => {
 |------|---------|---------|
 | **读取 `/exec` 结果** | `nodeRepl.write(...)` 或 `exec.sh` | 依赖块内最后一条表达式（HTTP 响应恒为空）|
 | **URL 导航** | `set_value(addrIdx, url)` + `press_key("Return")` | `press_key("Command+L")` + `type_text(url)`（会混入 `l` 字符）|
-| **键盘快捷键** | `press_key({ key: "Command+v" })` 等 keysym 格式；bootstrap 会自动把 `Cmd`/`Meta`/`Ctrl`/`Shift`/`Alt`/`Option` 归一化 | 直接使用 `Cmd+V`、`Meta+v`、`Ctrl+c`（sky 原生不认，会报 `keyNotFound`）|
+| **键盘快捷键** | `press_key({ key: "Command+v" })` 或 `Cmd+V`（bootstrap 自动归一化） | 绕过 bootstrap 直连 sky 原生 API 时使用 `Cmd+V`/`Ctrl+c`（会报 `keyNotFound`） |
 | **粘贴文本到输入框** | 优先 `set_value(element_index, text)`；剪贴板粘贴用 `Command+v`（或 `Cmd+V`，已自动归一化） | 对不支持 set_value 的控件盲目 `type_text` 中文 |
 | **输入中文 / 特殊字符** | `set_value(element_index, text)` | `type_text(text)`（IME 与特殊字符输入异常）|
 | **点击按钮 / 链接** | `click({ element_index })` 从 AX Tree 动态定位 | 硬编码坐标（窗口尺寸变化会失效）|

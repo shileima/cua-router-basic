@@ -436,6 +436,37 @@ const lines = s.text.split("\n").filter(l => {
 | 3 | `findAllIdx` + 传回 Agent | 首次关键词未命中，需人工选候选 |
 | 4 | 读 `s.screenshot.url` 截图 | AX Tree 无弹层节点时的兜底 |
 
+#### AX → OCR → 坐标扫描三级元素定位（AX 缺失时强制使用）
+
+当目标视觉可见，但 `get_app_state({ disableDiff:true }).text` 中找不到预期元素，禁止立即放弃，也禁止只靠单个硬编码坐标。必须按以下顺序降级：
+
+1. **AX Tree 定位**：完整 `s.text` 上用 `findFocusedIdx` / `findIdx` / `findAllIdx` 找目标元素；命中后用 `element_index` 点击。
+2. **截图 OCR 定位**：AX 找不到时，读取 `s.screenshot.url`，用 macOS Vision OCR / 视觉识别定位目标文案或图标的 bounding box，点击中心坐标。
+3. **固定坐标扫描**：OCR 也失败时，才使用预先校准的一组候选坐标，从最可能热区到次要热区依次尝试。
+4. **每次尝试必须验证**：点击后重新 `get_app_state({ disableDiff:true })`，用业务结果验证是否成功；成功后停止后续 attempts。
+
+返回给上层/日志时必须包含以下字段，便于沉淀最优定位方式：
+
+```json
+{
+  "successAttempt": "ax:<label> | ocr:<text>@<x>,<y> | coord-scan:<x>,<y>",
+  "successX": 344,
+  "successY": 393,
+  "strategy": "ax | ocr | coord-scan"
+}
+```
+
+若当前已经处于目标状态，可返回 `strategy: "already-done"` 或 `"already-playing"`，但仍应给出 `successAttempt` 说明短路原因。
+
+**通用 attempts 构造规则**：
+
+```js
+const attempts = [];
+if (axTarget) attempts.push({ element_index: axTarget.idx, label: `ax:${axTarget.title}`, strategy: "ax" });
+if (ocrTarget) attempts.push({ x: ocrTarget.x, y: ocrTarget.y, label: `ocr:${ocrTarget.text}@${ocrTarget.x},${ocrTarget.y}`, strategy: "ocr" });
+for (const p of coordCandidates) attempts.push({ x: p.x, y: p.y, label: `coord-scan:${p.x},${p.y}`, strategy: "coord-scan" });
+```
+
 **关键规则**：
 
 - 每次可能弹出浮层的操作后，**必须**重新 `get_app_state({ disableDiff: true })`
@@ -457,7 +488,7 @@ const lines = s.text.split("\n").filter(l => {
 | **双击 / Canvas 节点** | `Escape` → 等 600ms → 对节点内 **`文本`/图片** 子元素 `click({ click_count: 2 })` | 用 `clickCount`；未 Escape；双击 `container`；坐标双击 |
 | **变量声明** | 每段代码用 `{ ... }` 块作用域包裹 | 顶层 `const/let/var`（Node REPL session 内重复声明报错）|
 | **获取 AX Tree** | `get_app_state({ disableDiff: true })`，每次操作前重新获取 | 省略 `disableDiff: true`（页面无变化时仅返回 "no change" 短文本）；复用旧 AX Tree |
-| **元素搜索** | `findIdx` / `findAllIdx` 在**完整** `s.text` 上关键词全文搜索 | 按 idx 区间切片（如 20-80）；假设弹层一定在低 idx |
+| **元素搜索** | `findIdx` / `findAllIdx` 在**完整** `s.text` 上关键词全文搜索；AX 缺失时按 AX → OCR → 坐标扫描三级降级 | 按 idx 区间切片（如 20-80）；假设弹层一定在低 idx；AX 找不到就直接放弃或只点单个硬编码坐标 |
 | **弹层 / 对话框** | 操作后重新取树 → 先 `findFocusedIdx` → 再全文 `findIdx` | 第一次 null 就放弃；只在主内容区低 idx 查找 |
 | **触发 UI 刷新后截图** | 先执行任意操作，再 `get_app_state` | 无操作直接调（可能返回旧截图）|
 

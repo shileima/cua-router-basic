@@ -34,6 +34,11 @@ cmd_start() {
     echo "[cua-router] already healthy on http://localhost:${PORT}"
     pid="$(read_pid || true)"
     [ -n "${pid:-}" ] && echo "[cua-router] pid=${pid}"
+    if [ "$(uname -s)" = "Darwin" ] && [ -f "$SCRIPT_DIR/lib/preflight-chrome.sh" ]; then
+      # shellcheck source=lib/preflight-chrome.sh
+      source "$SCRIPT_DIR/lib/preflight-chrome.sh"
+      CUA_ROUTER_CHROME_PREFLIGHT=warn cua_preflight_chrome warn || true
+    fi
     return 0
   fi
 
@@ -62,6 +67,11 @@ cmd_start() {
   for i in $(seq 1 45); do
     if health_check; then
       echo "[cua-router] ready after ${i}s"
+      if [ "$(uname -s)" = "Darwin" ] && [ -f "$SCRIPT_DIR/lib/preflight-chrome.sh" ]; then
+        # shellcheck source=lib/preflight-chrome.sh
+        source "$SCRIPT_DIR/lib/preflight-chrome.sh"
+        CUA_ROUTER_CHROME_PREFLIGHT=warn cua_preflight_chrome warn || true
+      fi
       return 0
     fi
     sleep 1

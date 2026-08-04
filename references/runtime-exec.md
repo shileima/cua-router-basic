@@ -22,6 +22,30 @@ bash "$SKILL_ROOT/scripts/exec.sh" 'nodeRepl.write("ok")'
 
 输出 `ok` 表示在线。
 
+## Chrome 预检（Playwright 干扰）
+
+当 `exec.sh` 执行的 JS 涉及 `com.google.Chrome` 或 `"Google Chrome"` 时，会自动调用 `scripts/lib/preflight-chrome.sh`。
+
+典型故障：Playwright 以 `--no-startup-window` 占用 Chrome，`get_app_state` 报 `-10005: timeoutReached`。
+
+```bash
+bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" status
+bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" fix
+```
+
+`CUA_ROUTER_CHROME_PREFLIGHT` 控制行为：
+
+- `auto`（`exec.sh` 默认）：检测到 Playwright Chrome 或无窗口时自动修复
+- `warn`（`daemon.sh start` 使用）：仅 stderr 警告，不阻断
+- `off`：跳过
+
+手动修复等价于：
+
+```bash
+export CUA_ROUTER_CHROME_PREFLIGHT=auto
+bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" fix
+```
+
 ## Bootstrap sky
 
 `cua-router.py` 会在首次 `/exec` 时自动 bootstrap sky。仅在自动 bootstrap 失败或需要显式确认时手动执行：

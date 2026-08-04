@@ -53,6 +53,25 @@ bash "$SKILL_ROOT/scripts/exec.sh" 'nodeRepl.write("ok")'
 
 输出 `ok` 后才继续调用 `sky.*`。
 
+## Chrome 预检（Playwright 干扰）
+
+`sky.get_app_state({ app: "com.google.Chrome" })` 需要 Chrome 有**可见窗口**。Playwright MCP / cursor-ide-browser 常以 `--no-startup-window` 占用 Chrome，导致 `-10005: timeoutReached`。
+
+`exec.sh` 在代码 targeting Chrome 时会自动预检；默认 **auto**（停 Playwright + 确保有窗口）：
+
+```bash
+bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" status   # 只检查
+bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" fix      # 手动修复
+```
+
+环境变量 `CUA_ROUTER_CHROME_PREFLIGHT`：
+
+| 值 | 行为 |
+|---|---|
+| `auto` | `exec.sh`  targeting Chrome 时的默认值；停 Playwright、确保 Chrome 窗口 |
+| `warn` | 只警告并退出（`daemon.sh start` 使用此模式） |
+| `off` | 跳过预检 |
+
 ## 核心操作规范
 
 所有依赖本技能的代码块必须遵守：

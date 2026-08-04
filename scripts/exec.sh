@@ -108,6 +108,20 @@ ensure_service() {
   fi
 }
 
+maybe_preflight_chrome() {
+  if ! printf '%s' "$CODE" | grep -qE 'com\.google\.Chrome|["'\''`]Google Chrome["'\''`]'; then
+    return 0
+  fi
+
+  # shellcheck source=lib/preflight-chrome.sh
+  source "$SCRIPT_DIR/lib/preflight-chrome.sh"
+  local mode="${CUA_ROUTER_CHROME_PREFLIGHT:-auto}"
+  if ! cua_preflight_chrome "$mode"; then
+    echo "[exec] Chrome preflight failed; see warnings above" >&2
+    exit 1
+  fi
+}
+
 CODE="$(read_code "$@")"
 if [ -z "$CODE" ]; then
   echo "[exec] empty code" >&2
@@ -115,6 +129,7 @@ if [ -z "$CODE" ]; then
 fi
 
 ensure_service
+maybe_preflight_chrome
 
 RESP="$(python3 - "$EXEC_URL" "$TIMEOUT_MS" "$CODE" <<'PY'
 import json

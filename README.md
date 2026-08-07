@@ -5,6 +5,10 @@ cua-router + sky Computer Use API 基础技能。封装 macOS 上通过 cua-rout
 **平台**：macOS arm64（Apple Silicon）  
 **仓库**：https://github.com/shileima/cua-router-basic
 
+**文档入口**：
+- 用户 / Agent：[`SKILL.md`](./SKILL.md) + [`references/`](./references/)（操作规范、示例、故障降级）
+- 维护者：[`docs/`](./docs/README.md)（架构、AX 缓存设计、风险清单、vendor 同步、发布流程、排查）
+
 ---
 
 ## 快速安装

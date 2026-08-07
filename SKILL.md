@@ -97,23 +97,29 @@ bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" fix      # 手动修复
 无需在代码块里重复定义。参见 `scripts/computer-use-client.mjs`。
 
 - `sky.*`：Computer Use 原生 API。`click / double_click / set_value / type_text / press_key / scroll / hover / mouse_move / key_down / key_up` 调用后会自动失效对应 `app` 的 AX 缓存；无 `app` 参数（坐标点击）保守失效全部。
-- `ax.get(app, { refresh?: boolean })`：拿完整 AX 快照，跨 `/exec` 缓存；固定 `disableDiff:true`。
+- `ax.get(app, { refresh?: boolean, maxAgeMs?: number })`：拿完整 AX 快照，跨 `/exec` 缓存；固定 `disableDiff:true`。
+  - `refresh: true`：强制重取，绕过缓存。
+  - `maxAgeMs: N`：仅当缓存年龄 `< N` 毫秒时命中，否则重取。`maxAgeMs: 0` 等价于 `refresh: true`。**推荐轮询/等待异步 UI 更新的场景传 `maxAgeMs: 300~500`。**
 - `ax.invalidate(app?)`：手动失效指定 app 或全部缓存。
 - `ax.findIdx(text, ...keywords)`：定位第一个匹配行的 `element_index`。
 - `ax.findAllIdx(text, ...keywords)`：返回所有匹配 `{ idx, line }`。
 - `ax.findFocusedIdx(text)`：定位当前焦点元素。
 - `ax.linesMatching(text, pattern, { limit })`：按字符串或正则筛出匹配行。
 - `ax.summarize(state, { keywords, patterns, maxLines, textPreview, includeUrl, includeFocused })`：只回传必要字段，避免把整棵树塞进 `nodeRepl.write`。
+- `ax._stats()` / `ax._resetStats()`：调试用；返回 `{ hits, misses, staleMisses, refreshes, invalidations, hitRate, cacheSize, entries }`，每个 entry 附带 `ageMs / textLen`。
 
-> 性能：`ax.get(app)` 在没有交互动作时命中缓存，不会重复调 `sky.get_app_state`；一旦通过 `sky.*` 交互（哪怕出错），对应 app 缓存立即失效，下次 `ax.get(app)` 会自动重新拉，正确性等价于每次都取新树。
+> 性能：`ax.get(app)` 在没有交互动作时命中缓存，不会重复调 `sky.get_app_state`；一旦通过 `sky.*` 交互（哪怕出错），对应 app 缓存立即失效，下次 `ax.get(app)` 会自动重新拉，正确性等价于每次都取新树。外部触发（swift / AppleScript / 页面自身异步更新）不走 wrapper，必须显式 `refresh:true` 或 `maxAgeMs:N` 兜底。
 
 ## 性能建议（保持定位正确性的前提下）
 
 1. **一次取树，多次搜索**：同一步业务里如果需要找多个元素，只调一次 `ax.get(app)`，然后 `ax.findIdx(s.text, ...)` 复用 `s.text`。
 2. **中间等待不取树**：只在真正要做定位或验证结果时才 `ax.get(app)`；纯粹的 `setTimeout` 不要跟着取一次。
 3. **输出前收敛**：`nodeRepl.write` 前用 `ax.summarize` 或 `filter/slice`；不要把 `s.text` 整个 `JSON.stringify` 回传（Chrome 完整树常有数十万字符）。
-4. **外部交互后显式刷新**：`swift + CoreGraphics`、AppleScript、手动移鼠标不会经过 sky wrapper，之后必须 `ax.get(app, { refresh: true })` 或 `ax.invalidate(app)`。
+4. **外部交互后显式刷新**：`swift + CoreGraphics`、AppleScript、手动移鼠标、页面自身异步更新不会经过 sky wrapper：
+   - 明确知道交互点：`ax.get(app, { refresh: true })` 或 `ax.invalidate(app)`。
+   - 轮询/不确定何时更新：`ax.get(app, { maxAgeMs: 300~500 })` 兜底。
 5. **不要退回 diff 模式**：diff 语义会导致 `findIdx` 漏找、`element_index` 错位；性能优化只靠"减少调用次数"，不靠"取更小的树"。
+6. **卡壳时用 `ax._stats()` 排查**：怀疑拿到陈旧树时，看 `hitRate` 与 `entries[].ageMs`；`ax.invalidate()` 全清后重试若结果变化则确认是缓存问题。
 
 ## hover 菜单快速模板
 

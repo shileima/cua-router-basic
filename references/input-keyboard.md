@@ -44,25 +44,25 @@
 地址栏定位：
 
 ```js
-const addrLine = axText.split("\n").find(l => /settable, string/.test(l) && /地址/.test(l));
+const addrIdx = ax.findIdx(axText, "settable, string", "地址");
 ```
 
-普通输入框定位：
+普通输入框定位（用 `linesMatching` 过滤排除项）：
 
 ```js
-const fieldLine = axText.split("\n").find(l =>
-  /settable, string/.test(l) && /关键词/.test(l) && !/地址|编辑器|screen reader|文本输入区/.test(l)
-);
+const fieldLine = ax
+  .linesMatching(axText, /settable, string.*关键词/, { limit: 5 })
+  .find((l) => !/地址|编辑器|screen reader|文本输入区/.test(l));
 ```
 
 ## 粘贴示例
 
 ```js
 {
-  const s1 = await sky.get_app_state({ app: "cn.neixin.pc", disableDiff: true });
-  const inputIdx = findIdx(s1.text, "文本输入区", "说点什么");
+  const s1 = await ax.get("cn.neixin.pc");
+  const inputIdx = ax.findIdx(s1.text, "文本输入区", "说点什么");
   await sky.click({ app: "cn.neixin.pc", element_index: inputIdx });
-  await new Promise(r => setTimeout(r, 400));
+  await new Promise((r) => setTimeout(r, 400));
   await sky.press_key({ app: "cn.neixin.pc", key: "Cmd+V" });
 }
 ```

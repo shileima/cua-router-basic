@@ -33,7 +33,7 @@ Notes:
 Examples:
   $0 'nodeRepl.write("ok")'
   $0 -t 60000 -f navigate.js
-  $0 --json '{ const s = await sky.get_app_state({ app: "com.google.Chrome", disableDiff: true }); nodeRepl.write(JSON.stringify({ textLen: s.text.length })); }'
+  $0 --json '{ const s = await ax.get("com.google.Chrome"); nodeRepl.write(JSON.stringify(ax.summarize(s))); }'
 EOF
 }
 

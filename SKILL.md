@@ -81,34 +81,39 @@ bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" fix      # 手动修复
 | 读取 `/exec` 结果 | `nodeRepl.write(...)` 或 `exec.sh` | 依赖代码块最后一条表达式 |
 | 重复执行 JS | 直接使用 `exec.sh`；`/exec` 自动隔离每次作用域 | 为避免 `already declared` 手工改全局变量 |
 | URL 导航 | 地址栏 `set_value(addrIdx, url)` + `press_key("Return")` | `type_text(url)` |
-| 获取 AX Tree | `get_app_state({ disableDiff: true })` | 省略 `disableDiff` 或复用旧树 |
-| 元素搜索 | 在完整 `s.text` 上 `findIdx` / `findAllIdx` | 按 idx 区间切片 |
+| 获取 AX Tree | `ax.get(app)`（内部固定 `disableDiff:true` + 缓存自动失效） | 手写 `disableDiff:false`、跨交互复用旧树 |
+| 一段代码内取多次树 | 只调一次 `ax.get(app)`，多次 `ax.findIdx` 复用 `s.text` | 每次 `findIdx` 前都取一次树 |
+| 外部触发（swift / AppleScript / 手动鼠标） | 之后立刻 `ax.get(app, { refresh: true })` 或 `ax.invalidate(app)` | 直接 `ax.get(app)` 拿旧树 |
+| 元素搜索 | 在完整 `s.text` 上 `ax.findIdx / ax.findAllIdx` | 按 idx 区间切片 |
+| 输出到 `nodeRepl.write` | 用 `ax.summarize(s, { keywords, patterns, maxLines })` 或先 `filter + slice` | 回传完整 `s.text` 造成 payload 爆炸 |
 | AX 缺失降级 | AX → hover → OCR → 坐标扫描 | AX 找不到就放弃或只点单个硬编码坐标 |
-| hover 菜单 | 先系统鼠标移动触发 hover，再点菜单热区，最后重新取树验证 | 直接点卡片主体或菜单项全程用坐标 |
+| hover 菜单 | 先系统鼠标移动触发 hover，再点菜单热区，最后 `ax.get(app, {refresh:true})` 验证 | 直接点卡片主体或菜单项全程用坐标 |
 | 中文/URL 输入 | 优先 `set_value` | 盲目 `type_text` |
 | Canvas 双击 | `Escape` → 等 600ms → 对节点内文本/图片 `click_count: 2` | `clickCount`、双击 container、坐标双击 |
-| 弹层/对话框 | 操作后重新取树 → `findFocusedIdx` → 全文搜索 | 只扫低 idx |
+| 弹层/对话框 | 操作后 `ax.get(app)` → `ax.findFocusedIdx` → 全文搜索 | 只扫低 idx |
 
-## 常用辅助函数
+## 内置全局工具（bootstrap 后自动可用）
 
-```js
-function findIdx(axText, ...keywords) {
-  const line = axText.split("\n").find(l => keywords.every(k => l.includes(k)));
-  if (!line) return null;
-  return parseInt(line.match(/^\s*(\d+)/)[1]);
-}
+无需在代码块里重复定义。参见 `scripts/computer-use-client.mjs`。
 
-function findAllIdx(axText, ...keywords) {
-  return axText.split("\n")
-    .filter(l => keywords.every(k => l.includes(k)))
-    .map(l => ({ idx: parseInt(l.match(/^\s*(\d+)/)[1]), line: l.trim() }));
-}
+- `sky.*`：Computer Use 原生 API。`click / double_click / set_value / type_text / press_key / scroll / hover / mouse_move / key_down / key_up` 调用后会自动失效对应 `app` 的 AX 缓存；无 `app` 参数（坐标点击）保守失效全部。
+- `ax.get(app, { refresh?: boolean })`：拿完整 AX 快照，跨 `/exec` 缓存；固定 `disableDiff:true`。
+- `ax.invalidate(app?)`：手动失效指定 app 或全部缓存。
+- `ax.findIdx(text, ...keywords)`：定位第一个匹配行的 `element_index`。
+- `ax.findAllIdx(text, ...keywords)`：返回所有匹配 `{ idx, line }`。
+- `ax.findFocusedIdx(text)`：定位当前焦点元素。
+- `ax.linesMatching(text, pattern, { limit })`：按字符串或正则筛出匹配行。
+- `ax.summarize(state, { keywords, patterns, maxLines, textPreview, includeUrl, includeFocused })`：只回传必要字段，避免把整棵树塞进 `nodeRepl.write`。
 
-function findFocusedIdx(axText) {
-  const line = axText.split("\n").find(l => /focused UI element is/.test(l));
-  return line ? parseInt(line.match(/\b(\d+)\b/)?.[1]) : null;
-}
-```
+> 性能：`ax.get(app)` 在没有交互动作时命中缓存，不会重复调 `sky.get_app_state`；一旦通过 `sky.*` 交互（哪怕出错），对应 app 缓存立即失效，下次 `ax.get(app)` 会自动重新拉，正确性等价于每次都取新树。
+
+## 性能建议（保持定位正确性的前提下）
+
+1. **一次取树，多次搜索**：同一步业务里如果需要找多个元素，只调一次 `ax.get(app)`，然后 `ax.findIdx(s.text, ...)` 复用 `s.text`。
+2. **中间等待不取树**：只在真正要做定位或验证结果时才 `ax.get(app)`；纯粹的 `setTimeout` 不要跟着取一次。
+3. **输出前收敛**：`nodeRepl.write` 前用 `ax.summarize` 或 `filter/slice`；不要把 `s.text` 整个 `JSON.stringify` 回传（Chrome 完整树常有数十万字符）。
+4. **外部交互后显式刷新**：`swift + CoreGraphics`、AppleScript、手动移鼠标不会经过 sky wrapper，之后必须 `ax.get(app, { refresh: true })` 或 `ax.invalidate(app)`。
+5. **不要退回 diff 模式**：diff 语义会导致 `findIdx` 漏找、`element_index` 错位；性能优化只靠"减少调用次数"，不靠"取更小的树"。
 
 ## hover 菜单快速模板
 
@@ -120,9 +125,9 @@ swift -e 'import CoreGraphics; import Foundation; let p = CGPoint(x: 360, y: 210
 bash "$SKILL_ROOT/scripts/exec.sh" -t 60000 '{
   await sky.click({ app: "com.google.Chrome", x: 485, y: 172 });
   await new Promise(r => setTimeout(r, 1000));
-  const s = await sky.get_app_state({ app: "com.google.Chrome", disableDiff: true });
-  const menuLines = s.text.split("\n").filter(l => /启用中|创建副本|分享|移动到空间|删除|菜单/.test(l));
-  nodeRepl.write(JSON.stringify({ opened: menuLines.length > 0, menuLines: menuLines.slice(0, 20) }));
+  const s = await ax.get("com.google.Chrome", { refresh: true });
+  const menuLines = ax.linesMatching(s.text, /启用中|创建副本|分享|移动到空间|删除|菜单/, { limit: 20 });
+  nodeRepl.write(JSON.stringify({ opened: menuLines.length > 0, menuLines }));
 }'
 ```
 

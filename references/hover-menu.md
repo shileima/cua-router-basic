@@ -4,10 +4,10 @@
 
 ## 标准流程
 
-1. 先用 `get_app_state({ disableDiff:true })` 或截图确认页面与卡片位置。
+1. 先用 `ax.get(app)` 或截图确认页面与卡片位置（同一步内多次搜索复用同一份 `s.text`）。
 2. 用 macOS `swift + CoreGraphics` 把鼠标移动到卡片中心，触发 hover。
 3. 用 `sky.click({ x, y })` 点击 hover 后出现的右上角菜单热区。
-4. 重新 `get_app_state({ disableDiff:true })` 验证菜单出现。
+4. **重要**：swift 是外部交互，不走 sky wrapper；再取树时必须 `ax.get(app, { refresh: true })`。
 5. 菜单打开后，优先用菜单项的 `element_index` 点击，不要继续坐标点击菜单项。
 
 ## macOS hover 模板
@@ -22,11 +22,13 @@ if [ ! -f "$SKILL_ROOT/SKILL.md" ]; then SKILL_ROOT="${HOME}/.cursor/skills/cua-
 bash "$SKILL_ROOT/scripts/exec.sh" -t 60000 '{
   await sky.click({ app: "com.google.Chrome", x: 485, y: 172 });
   await new Promise(r => setTimeout(r, 1000));
-  const s = await sky.get_app_state({ app: "com.google.Chrome", disableDiff: true });
-  const menuLines = s.text.split("\n").filter(l => /启用中|创建副本|分享|移动到空间|删除|菜单/.test(l));
-  nodeRepl.write(JSON.stringify({ opened: menuLines.length > 0, menuLines: menuLines.slice(0, 20) }));
+  const s = await ax.get("com.google.Chrome", { refresh: true });
+  const menuLines = ax.linesMatching(s.text, /启用中|创建副本|分享|移动到空间|删除|菜单/, { limit: 20 });
+  nodeRepl.write(JSON.stringify({ opened: menuLines.length > 0, menuLines }));
 }'
 ```
+
+> 说明：`sky.click({ app, x, y })` 有 `app` 参数，wrapper 会自动失效对应 app 缓存，`ax.get` 会自动重新拉；这里显式 `{ refresh: true }` 是为了同时兜住 swift 外部交互带来的树变化，双保险。
 
 ## RPA 工作流卡片实测经验
 

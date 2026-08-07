@@ -19,7 +19,11 @@ import {
   createAxHelpers,
   wrapSkyClient,
   invalidateAxCache,
+  axStatsSnapshot,
+  resetAxStats,
 } from "../scripts/computer-use-client.mjs";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const SAMPLE_AX_TEXT = [
   "  1 window Google Chrome",
@@ -267,4 +271,115 @@ test("ax.get 参数校验：非字符串 app 抛错", async () => {
   const ax = createAxHelpers(sky);
   await assert.rejects(() => ax.get(""), /requires an app bundle id/);
   await assert.rejects(() => ax.get(undefined), /requires an app bundle id/);
+});
+
+test("ax.get({ maxAgeMs }): 未超时命中缓存", async () => {
+  invalidateAxCache();
+  const sky = createMockSky();
+  const ax = createAxHelpers(sky);
+  await ax.get("com.google.Chrome");
+  await ax.get("com.google.Chrome", { maxAgeMs: 5000 });
+  assert.equal(sky.calls.get_app_state, 1, "远未超时应命中缓存");
+});
+
+test("ax.get({ maxAgeMs }): 超时判定为陈旧，自动重取", async () => {
+  invalidateAxCache();
+  const sky = createMockSky();
+  const ax = createAxHelpers(sky);
+  await ax.get("com.google.Chrome");
+  await sleep(30);
+  await ax.get("com.google.Chrome", { maxAgeMs: 10 });
+  assert.equal(sky.calls.get_app_state, 2, "缓存年龄 > maxAgeMs 应重取");
+});
+
+test("ax.get({ maxAgeMs: 0 }): 永远视为陈旧，等价于强制刷新", async () => {
+  invalidateAxCache();
+  const sky = createMockSky();
+  const ax = createAxHelpers(sky);
+  await ax.get("com.google.Chrome");
+  await ax.get("com.google.Chrome", { maxAgeMs: 0 });
+  assert.equal(sky.calls.get_app_state, 2);
+});
+
+test("ax.get: refresh:true 覆盖 maxAgeMs（refresh 优先级更高）", async () => {
+  invalidateAxCache();
+  const sky = createMockSky();
+  const ax = createAxHelpers(sky);
+  await ax.get("com.google.Chrome");
+  await ax.get("com.google.Chrome", { refresh: true, maxAgeMs: 999999 });
+  assert.equal(sky.calls.get_app_state, 2);
+});
+
+test("ax._stats: hits / misses / refreshes / staleMisses 计数正确", async () => {
+  invalidateAxCache();
+  resetAxStats();
+  const sky = createMockSky();
+  const ax = createAxHelpers(sky);
+
+  await ax.get("com.google.Chrome"); // miss
+  await ax.get("com.google.Chrome"); // hit
+  await ax.get("com.google.Chrome", { refresh: true }); // refresh
+  await sleep(20);
+  await ax.get("com.google.Chrome", { maxAgeMs: 5 }); // staleMiss
+
+  const s = ax._stats();
+  assert.equal(s.misses, 1);
+  assert.equal(s.hits, 1);
+  assert.equal(s.refreshes, 1);
+  assert.equal(s.staleMisses, 1);
+  assert.equal(s.cacheSize, 1);
+  assert.equal(s.entries[0].app, "com.google.Chrome");
+  assert.ok(s.entries[0].ageMs >= 0);
+  assert.ok(s.hitRate > 0 && s.hitRate < 1);
+});
+
+test("ax._stats: invalidations 计数（按 app 与整体）", () => {
+  invalidateAxCache();
+  resetAxStats();
+  const cache = new Map();
+  // 直接借 wrapSkyClient 回填两个 app
+  const mock = createMockSky();
+  const sky = wrapSkyClient(mock);
+  return (async () => {
+    await sky.get_app_state({ app: "a", disableDiff: true });
+    await sky.get_app_state({ app: "b", disableDiff: true });
+    invalidateAxCache("a");
+    assert.equal(ax_snapshotInvalidations(), 1);
+    invalidateAxCache();
+    assert.equal(ax_snapshotInvalidations(), 2);
+  })();
+});
+
+function ax_snapshotInvalidations() {
+  return axStatsSnapshot().invalidations;
+}
+
+test("ax._resetStats: 归零所有计数", async () => {
+  invalidateAxCache();
+  const sky = createMockSky();
+  const ax = createAxHelpers(sky);
+  await ax.get("com.google.Chrome");
+  await ax.get("com.google.Chrome");
+  assert.ok(ax._stats().hits + ax._stats().misses > 0);
+  ax._resetStats();
+  const s = ax._stats();
+  assert.equal(s.hits, 0);
+  assert.equal(s.misses, 0);
+  assert.equal(s.refreshes, 0);
+  assert.equal(s.staleMisses, 0);
+  assert.equal(s.invalidations, 0);
+});
+
+test("ax._stats entries 携带每个 app 的年龄与 textLen", async () => {
+  invalidateAxCache();
+  const sky = createMockSky();
+  const ax = createAxHelpers(sky);
+  await ax.get("com.google.Chrome");
+  await sleep(10);
+  const s = ax._stats();
+  assert.equal(s.cacheSize, 1);
+  assert.equal(s.entries.length, 1);
+  assert.equal(s.entries[0].app, "com.google.Chrome");
+  assert.ok(s.entries[0].ageMs >= 10);
+  assert.equal(s.entries[0].textLen, SAMPLE_AX_TEXT.length);
 });

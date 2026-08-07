@@ -3,7 +3,12 @@ import { pathToFileURL } from "node:url";
 
 const COMPUTER_USE_RUNTIME_KEY = Symbol.for("openai.computer-use.runtime");
 const COMPUTER_USE_AX_CACHE_KEY = Symbol.for("openai.computer-use.ax-cache");
+const COMPUTER_USE_AX_STATS_KEY = Symbol.for("openai.computer-use.ax-stats");
 const COMPUTER_USE_AX_HELPERS_KEY = Symbol.for("openai.computer-use.ax-helpers");
+
+function makeStats() {
+  return { hits: 0, misses: 0, staleMisses: 0, invalidations: 0, refreshes: 0 };
+}
 
 const SKY_MAC_CLIENT_ENTRYPOINT = [
   "@oai",
@@ -80,14 +85,63 @@ function getAxCache() {
   return cache;
 }
 
+function getAxStats() {
+  let stats = Reflect.get(globalThis, COMPUTER_USE_AX_STATS_KEY);
+  if (stats == null || typeof stats !== "object") {
+    stats = makeStats();
+    Reflect.set(globalThis, COMPUTER_USE_AX_STATS_KEY, stats);
+  }
+  return stats;
+}
+
 /** @param {string | null | undefined} app 传 null/undefined 时失效全部 */
 export function invalidateAxCache(app) {
   const cache = getAxCache();
+  const stats = getAxStats();
   if (app == null) {
+    stats.invalidations += cache.size;
     cache.clear();
     return;
   }
-  cache.delete(app);
+  if (cache.delete(app)) {
+    stats.invalidations += 1;
+  }
+}
+
+/** 内部：写入缓存条目，附带获取时间戳。仅供 wrapSkyClient / createAxHelpers 使用。 */
+function writeCacheEntry(app, state) {
+  getAxCache().set(app, { state, fetchedAt: Date.now() });
+}
+
+export function axStatsSnapshot() {
+  const cache = getAxCache();
+  const stats = getAxStats();
+  const now = Date.now();
+  /** @type {{app:string, ageMs:number, fetchedAt:number, textLen:number}[]} */
+  const entries = [];
+  for (const [app, entry] of cache) {
+    entries.push({
+      app,
+      ageMs: now - entry.fetchedAt,
+      fetchedAt: entry.fetchedAt,
+      textLen: typeof entry.state?.text === "string" ? entry.state.text.length : 0,
+    });
+  }
+  const total = stats.hits + stats.misses + stats.staleMisses + stats.refreshes;
+  return {
+    hits: stats.hits,
+    misses: stats.misses,
+    staleMisses: stats.staleMisses,
+    refreshes: stats.refreshes,
+    invalidations: stats.invalidations,
+    hitRate: total > 0 ? stats.hits / total : 0,
+    cacheSize: cache.size,
+    entries,
+  };
+}
+
+export function resetAxStats() {
+  Reflect.set(globalThis, COMPUTER_USE_AX_STATS_KEY, makeStats());
 }
 
 export function findIdx(axText, ...keywords) {
@@ -193,21 +247,40 @@ export function createAxHelpers(sky) {
     /**
      * 拿 AX 完整快照（强制 disableDiff:true，保证 findIdx / element_index 正确）。
      * 跨 /exec 缓存；sky 交互后 wrapper 会自动失效。
-     * 外部触发（swift / AppleScript / 手动鼠标）后需 refresh:true 或 invalidate。
+     * 外部触发（swift / AppleScript / 手动鼠标 / 页面自身异步更新）后：
+     *   - 显式：ax.get(app, { refresh: true }) 或 ax.invalidate(app)
+     *   - 兜底：ax.get(app, { maxAgeMs: 500 }) — 缓存超过 500ms 自动重取
      * @param {string} app
-     * @param {{ refresh?: boolean }} [opts]
+     * @param {{ refresh?: boolean, maxAgeMs?: number | null }} [opts]
      */
     async get(app, opts = {}) {
-      const { refresh = false } = opts;
+      const { refresh = false, maxAgeMs = null } = opts;
       if (typeof app !== "string" || !app) {
         throw new Error("ax.get(app) requires an app bundle id string");
       }
       const cache = getAxCache();
-      if (!refresh && cache.has(app)) {
-        return cache.get(app);
+      const stats = getAxStats();
+      const entry = cache.get(app);
+      const now = Date.now();
+
+      if (!refresh && entry != null) {
+        // 语义：age >= maxAgeMs 判定为陈旧，因此 maxAgeMs:0 等价于强制刷新
+        // （对齐 HTTP max-age=0 「必须 revalidate」的语义）。
+        const stale =
+          typeof maxAgeMs === "number" && maxAgeMs >= 0 && now - entry.fetchedAt >= maxAgeMs;
+        if (!stale) {
+          stats.hits += 1;
+          return entry.state;
+        }
+        stats.staleMisses += 1;
+      } else if (refresh) {
+        stats.refreshes += 1;
+      } else {
+        stats.misses += 1;
       }
+
       const state = await sky.get_app_state({ app, disableDiff: true });
-      cache.set(app, state);
+      writeCacheEntry(app, state);
       return state;
     },
     invalidate: invalidateAxCache,
@@ -216,6 +289,8 @@ export function createAxHelpers(sky) {
     findFocusedIdx,
     linesMatching,
     summarize: summarizeAxState,
+    _stats: axStatsSnapshot,
+    _resetStats: resetAxStats,
   });
 }
 
@@ -243,11 +318,11 @@ export function wrapSkyClient(sky) {
       return withAxInvalidate(input?.app, originalPressKey(normalized));
     },
     // 保留原生调用行为；同时在 disableDiff:true 时回填 AX 缓存，
-    // 让 sky.get_app_state 与 ax.get 共用同一份快照。
+    // 让 sky.get_app_state 与 ax.get 共用同一份快照（带 fetchedAt 时间戳）。
     async get_app_state(input, ...rest) {
       const state = await originalGetAppState(input, ...rest);
       if (input && typeof input.app === "string" && input.disableDiff === true) {
-        getAxCache().set(input.app, state);
+        writeCacheEntry(input.app, state);
       }
       return state;
     },

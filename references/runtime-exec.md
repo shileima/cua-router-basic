@@ -55,11 +55,13 @@ bash "$SKILL_ROOT/scripts/exec.sh" -t 20000 \
   "const { setupComputerUseRuntime } = await import('$SKILL_ROOT/scripts/computer-use-client.mjs'); await setupComputerUseRuntime({ globals: globalThis }); nodeRepl.write('bootstrapped');"
 ```
 
-重复 import 可能报 `already declared`，可忽略。
+`/exec` 会自动把每段 JS 包进独立块级作用域。重复执行包含顶层 `const` / `let` / `class` 的命令时，不应再出现 `Identifier ... has already been declared` 这类 REPL 变量污染错误。
 
 ## 必须通过 `nodeRepl.write()` 输出
 
 node_repl 不会把最后一条表达式作为 HTTP 响应返回。
+
+每次 `/exec` 都会自动隔离作用域；命令里仍推荐使用局部 `const` / `let`，无需为了重复执行改成全局变量。
 
 错误示例：
 

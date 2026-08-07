@@ -102,6 +102,10 @@ read_code() {
   exit 1
 }
 
+wrap_code_for_repl() {
+  printf '{\n%s\n}' "$1"
+}
+
 ensure_service() {
   if [ "$ENSURE_START" -eq 1 ]; then
     bash "$SCRIPT_DIR/daemon.sh" start >/dev/null
@@ -127,6 +131,7 @@ if [ -z "$CODE" ]; then
   echo "[exec] empty code" >&2
   exit 1
 fi
+CODE="$(wrap_code_for_repl "$CODE")"
 
 ensure_service
 maybe_preflight_chrome

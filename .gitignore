@@ -20,3 +20,8 @@ dist/
 
 # Process logs (daemon.sh defaults to /tmp; ignore if redirected here)
 *.log
+
+# Python bytecode caches (incl. sandbox-redirected PYTHONPYCACHEPREFIX output)
+__pycache__/
+*.pyc
+.pycache/

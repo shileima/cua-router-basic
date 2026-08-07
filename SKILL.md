@@ -79,6 +79,7 @@ bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" fix      # 手动修复
 | 操作 | 正确方式 | 禁止方式 |
 |---|---|---|
 | 读取 `/exec` 结果 | `nodeRepl.write(...)` 或 `exec.sh` | 依赖代码块最后一条表达式 |
+| 重复执行 JS | 直接使用 `exec.sh`；`/exec` 自动隔离每次作用域 | 为避免 `already declared` 手工改全局变量 |
 | URL 导航 | 地址栏 `set_value(addrIdx, url)` + `press_key("Return")` | `type_text(url)` |
 | 获取 AX Tree | `get_app_state({ disableDiff: true })` | 省略 `disableDiff` 或复用旧树 |
 | 元素搜索 | 在完整 `s.text` 上 `findIdx` / `findAllIdx` | 按 idx 区间切片 |

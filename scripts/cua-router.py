@@ -50,6 +50,35 @@ await setupComputerUseRuntime({{ globals: globalThis }});
 console.log("sky bootstrapped, keys:", Object.keys(globalThis.sky).join(","));
 """
 
+# Readiness deep-probe: forces the sky native pipe to actually connect to the
+# Sky Computer Use background service (com.openai.sky.CUAService). list_apps is
+# the lightest sky RPC — no target app, read-only, does not change focus — yet it
+# still requires the native socket + CUAService to be alive, so it is the ideal
+# signal that the whole desktop-control stack (layer ⑤) is ready, not just node_repl.
+SKY_READINESS_PROBE = f"""
+{{
+  if (typeof globalThis.sky === "undefined" || !globalThis.sky) {{
+    const mod = await import("{CLIENT_MJS}");
+    await mod.setupComputerUseRuntime({{ globals: globalThis }});
+  }}
+  const apps = await globalThis.sky.list_apps();
+  const n = Array.isArray(apps) ? apps.length : (apps && apps.apps ? apps.apps.length : -1);
+  nodeRepl.write("cua-ready:" + n);
+}}
+"""
+
+def wrap_js_for_repl(code: str) -> str:
+    """Run each /exec snippet in its own scope to avoid REPL redeclare noise."""
+    if not code.strip():
+        return code
+    return f"{{\n{code}\n}}"
+
+
+# Unix domain socket the CUAService listens on once it is up.
+CUA_SERVICE_SOCKET = os.path.expanduser(
+    "~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/IPC/computeruse.sock"
+)
+
 # ──────────────────────────────────────────────
 # app-server session (singleton, lazy-init)
 # ──────────────────────────────────────────────
@@ -156,7 +185,7 @@ class AppServerSession:
                 "server": "node_repl",
                 "threadId": self._thread_id,
                 "tool": "js",
-                "arguments": {"code": SKY_BOOTSTRAP, "title": "bootstrap sky", "timeout_ms": 10000}
+                "arguments": {"code": wrap_js_for_repl(SKY_BOOTSTRAP), "title": "bootstrap sky", "timeout_ms": 10000}
             }, timeout=15)
             if r and not r.get("result", {}).get("isError"):
                 self._sky_bootstrapped = True
@@ -166,7 +195,7 @@ class AppServerSession:
             "server": "node_repl",
             "threadId": self._thread_id,
             "tool": "js",
-            "arguments": {"code": code, "title": "cua", "timeout_ms": timeout_ms}
+            "arguments": {"code": wrap_js_for_repl(code), "title": "cua", "timeout_ms": timeout_ms}
         }, timeout=timeout_ms / 1000 + 5)
 
         if r is None:
@@ -199,6 +228,107 @@ def execute_tool_call(tool_name: str, arguments: dict) -> dict:
             "isError": result.get("isError", False)
         }
     return {"output": [{"type": "text", "text": f"unknown tool: {tool_name}"}], "isError": True}
+
+
+# ──────────────────────────────────────────────
+# readiness probe (liveness of node_repl + real sky native pipe)
+# ──────────────────────────────────────────────
+
+def _content_text(result: dict) -> str:
+    for item in (result or {}).get("content", []) or []:
+        if isinstance(item, dict) and item.get("type") == "text":
+            return item.get("text", "")
+    return ""
+
+
+def _classify_probe_error(text: str) -> str:
+    """Map a raw sky error string to a stable machine-readable reason code."""
+    low = (text or "").lower()
+    if (
+        "native pipe startup failed" in low
+        or "native pipe is unavailable" in low
+        or "service startup request failed" in low
+        or "closed before response" in low
+    ):
+        return "cua_service_down"
+    if "timed out" in low or "timeout" in low:
+        return "timeout"
+    if (
+        "not authorized" in low
+        or "approval" in low
+        or "permission" in low
+        or "accessibility" in low
+        or "screen recording" in low
+    ):
+        return "not_authorized"
+    if "version mismatch" in low or "incompatible" in low:
+        return "version_mismatch"
+    return (text or "").strip()[:200] or "unknown"
+
+
+def probe_ready(deep: bool = True) -> dict:
+    """
+    Structured readiness probe used by /ready and daemon.sh.
+
+    Tiers:
+      - socket : whether the CUAService unix socket file exists (cheap, filesystem)
+      - live   : node_repl can run trivial JS (layers ②③)
+      - sky    : sky.list_apps() succeeds → native pipe + CUAService are up (layer ⑤)
+    ready = live and (sky when deep). reason carries a stable code on failure.
+    """
+    import stat as _stat
+
+    res = {
+        "ready": False,
+        "live": False,
+        "sky": False,
+        "socket": False,
+        "reason": "",
+        "ts": int(time.time()),
+    }
+
+    try:
+        st = os.stat(CUA_SERVICE_SOCKET)
+        res["socket"] = _stat.S_ISSOCK(st.st_mode)
+    except OSError:
+        res["socket"] = False
+
+    try:
+        live = _session.call_js('nodeRepl.write("ok")', 6000)
+    except Exception as exc:  # noqa: BLE001 - surfaced as reason
+        res["reason"] = f"router_error: {exc}"
+        return res
+
+    res["live"] = (not live.get("isError")) and _content_text(live).strip() == "ok"
+    if not res["live"]:
+        res["reason"] = "node_repl_down"
+        return res
+
+    if not deep:
+        res["ready"] = True
+        res["reason"] = "live"
+        return res
+
+    try:
+        probe = _session.call_js(SKY_READINESS_PROBE, 12000)
+    except Exception as exc:  # noqa: BLE001 - surfaced as reason
+        res["reason"] = f"probe_error: {exc}"
+        return res
+
+    ptext = _content_text(probe)
+    if probe.get("isError"):
+        res["reason"] = _classify_probe_error(ptext)
+    elif ptext.startswith("cua-ready"):
+        res["sky"] = True
+    else:
+        res["reason"] = ("unexpected: " + ptext.strip()[:180]) or "unexpected"
+
+    res["ready"] = res["live"] and res["sky"]
+    if res["ready"]:
+        res["reason"] = "ok"
+        # If sky works the socket is necessarily up, even if the stat() above raced.
+        res["socket"] = True
+    return res
 
 
 # ──────────────────────────────────────────────
@@ -293,6 +423,34 @@ class RouterHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[http] {fmt % args}", flush=True)
 
+    def _write_json(self, obj: dict, status: int = 200):
+        data = json.dumps(obj).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _handle_ready(self, deep: bool):
+        try:
+            self._write_json(probe_ready(deep=deep))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ready] error: {exc}", flush=True)
+            self._write_json({"ready": False, "live": False, "sky": False,
+                              "socket": False, "reason": f"error: {exc}"}, 200)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        # /ready → full deep probe (default);  /health → shallow liveness only
+        if path == "/ready":
+            self._handle_ready(deep=True)
+            return
+        if path == "/health":
+            self._handle_ready(deep=False)
+            return
+        self.send_response(404)
+        self.end_headers()
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
@@ -303,6 +461,10 @@ class RouterHandler(BaseHTTPRequestHandler):
             self.send_response(400)
             self.end_headers()
             self.wfile.write(b"bad json")
+            return
+
+        if self.path.split("?", 1)[0] == "/ready":
+            self._handle_ready(deep=bool(req_body.get("deep", True)))
             return
 
         if self.path == "/exec":

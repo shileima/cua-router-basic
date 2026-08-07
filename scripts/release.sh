@@ -123,8 +123,45 @@ upload_release() {
   fi
 }
 
+verify_main_sync() {
+  local branch tag_commit need_sync=""
+  branch="$(git -C "$COMMON_SKILL_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+  tag_commit="$(git -C "$COMMON_SKILL_ROOT" rev-parse "$TAG^{commit}" 2>/dev/null || echo "")"
+
+  if [ -n "$branch" ] && [ "$branch" != "main" ]; then
+    warn "release commit 位于分支 '$branch'，不在 'main'"
+    need_sync=1
+  fi
+
+  if git -C "$COMMON_SKILL_ROOT" fetch origin main --quiet 2>/dev/null; then
+    if [ -n "$tag_commit" ] \
+        && ! git -C "$COMMON_SKILL_ROOT" merge-base --is-ancestor "$tag_commit" origin/main 2>/dev/null; then
+      warn "release commit 尚未合入 origin/main"
+      need_sync=1
+    fi
+  else
+    warn "无法 fetch origin/main，未能校验 main 是否同步"
+    need_sync=1
+  fi
+
+  if [ -n "$need_sync" ]; then
+    cat >&2 <<EOF
+[cua-router-basic] 重要：客户端 update-remote.sh 读取
+  https://raw.githubusercontent.com/${repo}/main/.meta.json
+判断是否有更新；未合入 main，客户端将检测不到 v${VERSION}。
+
+请执行：
+  git checkout main
+  git merge --ff-only ${branch:-<release-branch>}
+  git push origin main
+  git push origin ${TAG}
+EOF
+  else
+    info "已验证：release commit 已同步到 'main'（本地与 origin 一致）"
+  fi
+}
+
 upload_release
+verify_main_sync
 
 info "release published: https://github.com/${repo}/releases/tag/${TAG}"
-info "push to remote:"
-info "  git push origin main && git push origin ${TAG}"

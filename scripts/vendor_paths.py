@@ -55,14 +55,14 @@ def sky_client_bin() -> Path:
 
 
 def event_stream_home() -> Path:
-    """Dedicated CODEX_HOME for the event-stream mcp child.
+    """CODEX_HOME for the event-stream mcp child.
 
-    The event-stream client resolves the runtime app from
-    ``$CODEX_HOME/computer-use/Codex Computer Use.app``. We keep it isolated
-    from the app-server's own runtime dir so recording state never collides
-    with node_repl / computer-use state.
+    Record & Replay must share the app-server CODEX_HOME so its event observer
+    chain is available. The client also resolves its runtime app from
+    ``$CODEX_HOME/computer-use/Codex Computer Use.app``, so we place that
+    symlink directly under the shared runtime directory.
     """
-    return RUNTIME / "event-stream-home"
+    return RUNTIME
 
 
 def ensure_event_stream_home() -> Path:

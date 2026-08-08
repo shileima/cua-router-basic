@@ -13,9 +13,10 @@ rdb_info() {
 
 # 依次尝试定位 cua-router-basic 的 SKILL_ROOT：
 #   1. 环境变量 CUA_ROUTER_INSTALL_DIR（显式指定）
-#   2. ~/.automan/skills/cua-router-basic（automan 安装）
-#   3. ~/.cursor/skills/cua-router-basic（Cursor 安装）
-#   4. record-desk-basic 的父目录（开发态：与 cua-router-basic 同仓库/同级）
+#   2. record-desk-basic 同级的 cua-router-basic（agent 技能目录安装）
+#   3. record-desk-basic 的父目录（开发态：作为 cua-router-basic 仓库子目录）
+#   4. ~/.automan/skills/cua-router-basic（automan 全局安装）
+#   5. ~/.cursor/skills/cua-router-basic（Cursor 安装）
 # 命中条件：该目录存在 vendor/computer-use/.../SkyComputerUseClient。
 resolve_cua_root() {
   local rdb_root="$1"
@@ -24,10 +25,12 @@ resolve_cua_root() {
 
   local -a candidates=()
   [ -n "${CUA_ROUTER_INSTALL_DIR:-}" ] && candidates+=("$CUA_ROUTER_INSTALL_DIR")
-  candidates+=("$HOME/.automan/skills/cua-router-basic")
-  candidates+=("$HOME/.cursor/skills/cua-router-basic")
+  # 安装态：record-desk-basic 与 cua-router-basic 同在一个 skills 目录下。
+  candidates+=("$(cd "$rdb_root/.." && pwd)/cua-router-basic")
   # 开发态：record-desk-basic 作为 cua-router-basic 仓库的子目录时，父目录即根。
   candidates+=("$(cd "$rdb_root/.." && pwd)")
+  candidates+=("$HOME/.automan/skills/cua-router-basic")
+  candidates+=("$HOME/.cursor/skills/cua-router-basic")
 
   for candidate in "${candidates[@]}"; do
     [ -n "$candidate" ] || continue

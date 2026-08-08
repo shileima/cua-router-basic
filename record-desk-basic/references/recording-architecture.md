@@ -73,11 +73,12 @@ args = ["event-stream", "mcp"]
 startup_timeout_sec = 120
 
 [mcp_servers.event_stream.env]
-CODEX_HOME = "<runtime>/event-stream-home"     # 隔离 CODEX_HOME，内含 computer-use 符号链接
+CODEX_HOME = "<runtime>"                       # 必须与 app-server 共用 CODEX_HOME
 SKY_CUA_SERVICE_PATH = "<vendor>/Codex Computer Use.app"
 ```
 
-- event-stream 子进程从 `$CODEX_HOME/computer-use/Codex Computer Use.app` 解析 runtime app；因此为其准备一个专用 `event-stream-home`，里面软链 `computer-use → vendor/computer-use`（`ensure_event_stream_home()`），与 node_repl / computer-use 的状态隔离。
+- event-stream 子进程从 `$CODEX_HOME/computer-use/Codex Computer Use.app` 解析 runtime app；因此在 app-server 共用的 `<runtime>` 目录里放置 `computer-use → vendor/computer-use` 符号链接（`ensure_event_stream_home()`）。
+- 不能把 event-stream 放到独立 `CODEX_HOME`：实测 `event_stream_status/start` 会重新退化为长时间不返回，或在符号链接未生成时打开 `<runtime>/event-stream-home/computer-use/Codex Computer Use.app` 失败。
 
 ### 2. cua-router 暴露 /record 端点转发
 

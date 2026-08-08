@@ -29,9 +29,39 @@ if [ "${RECORD_DESK_WARM:-1}" = "1" ]; then
   if bash "$CUA_ROOT/scripts/daemon.sh" start >/dev/null 2>&1; then
     rdb_info "cua-router 守护进程已就绪 ✅（http://localhost:${PORT}）"
     # 冒烟：经 /record 查一次状态，确认 event_stream 已被 app-server 托管。
-    if curl -sf -X POST "http://localhost:${PORT}/record" \
-         -H 'Content-Type: application/json' -d '{"action":"status"}' >/dev/null 2>&1; then
+    record_resp="$(curl -sf -X POST "http://localhost:${PORT}/record" \
+      -H 'Content-Type: application/json' -d '{"action":"status"}' 2>/dev/null)" \
+      || rdb_die "event_stream 冒烟检查失败：无法调用 /record status"
+    if python3 - "$record_resp" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1]
+try:
+    obj = json.loads(raw)
+except Exception:
+    sys.exit(1)
+
+if not obj.get("isError"):
+    sys.exit(0)
+
+text = " ".join(
+    c.get("text", "")
+    for c in obj.get("content", [])
+    if isinstance(c, dict) and c.get("type") == "text"
+)
+
+# 空闲状态下 status 可能用账号 feature-flag 错误作探测结果；start 仍可正常发起。
+if "Record & Replay is not enabled for this user" in text:
+    sys.exit(0)
+
+print(f"[record-desk-basic] /record status error: {text}", file=sys.stderr)
+sys.exit(1)
+PY
+    then
       rdb_info "event_stream 已由 app-server 托管，/record 可用 ✅"
+    else
+      rdb_die "event_stream 已注册但不可用；请先修复 /record status 返回错误"
     fi
   else
     rdb_info "warning: cua-router 守护进程未就绪；首次录制前请先 bash \"$CUA_ROOT/scripts/daemon.sh\" start"

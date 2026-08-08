@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
@@ -71,11 +72,22 @@ def ensure_event_stream_home() -> Path:
     home.mkdir(parents=True, exist_ok=True)
     link = home / "computer-use"
     target = computer_use_dir()
+    expected_app = link / "Codex Computer Use.app"
     if link.is_symlink():
-        if os.readlink(link) != str(target):
+        if os.readlink(link) != str(target) or not expected_app.exists():
             link.unlink()
             link.symlink_to(target)
-    elif not link.exists():
+    elif link.exists():
+        # Old or interrupted installs may leave a real but incomplete directory
+        # here. Record & Replay resolves the runtime app from CODEX_HOME, so
+        # repair that state before the event-stream child starts.
+        if not expected_app.exists():
+            if link.is_dir():
+                shutil.rmtree(link)
+            else:
+                link.unlink()
+            link.symlink_to(target)
+    else:
         link.symlink_to(target)
     return home
 

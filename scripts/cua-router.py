@@ -233,6 +233,17 @@ class AppServerSession:
         connects but never receives an XPC reply (the service has nowhere to
         stream events), so we always route through this app-server session.
         """
+        try:
+            # The router can outlive install/sync steps that rewrite the skill
+            # directory. Repair CODEX_HOME/computer-use before event-stream
+            # resolves "Codex Computer Use.app" from that runtime location.
+            write_runtime_config()
+        except Exception as exc:  # noqa: BLE001 - surfaced to /record callers
+            return {
+                "content": [{"type": "text", "text": f"record runtime unavailable: {exc}"}],
+                "isError": True,
+            }
+
         self.ensure()
         tool = f"event_stream_{action}"
         id_ = self._next_id()

@@ -22,7 +22,7 @@ description: >
 ## 依赖
 
 - **cua-router-basic**（必需）：提供 `vendor/computer-use/…/SkyComputerUseClient` 与后台 `CUAService` 预热逻辑。安装/定位见 `cua-router-basic` 的 `references/install.md`。
-- 本技能脚本按以下顺序自动定位 cua-router-basic 根目录：`CUA_ROUTER_INSTALL_DIR` → `~/.automan/skills/cua-router-basic` → `~/.cursor/skills/cua-router-basic` → 本技能父目录（同仓库开发态）。
+- 本技能脚本按以下顺序自动定位 cua-router-basic 根目录：`CUA_ROUTER_INSTALL_DIR` → **同级 `cua-router-basic/`（推荐，automan cua-agent profile 布局）** → 本技能父目录（同仓库开发态）→ `~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic` → `~/.automan/skills/cua-router-basic`（旧布局，向后兼容）→ `~/.cursor/skills/cua-router-basic`。
 
 ## 架构：录制必须由 cua-router-basic 的 app-server 托管
 

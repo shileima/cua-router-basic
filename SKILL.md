@@ -43,10 +43,9 @@ description: >
 执行任何 sky/cua-router 操作前，先确认服务在线：
 
 ```bash
-SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-${HOME}/.automan/skills/cua-router-basic}"
-if [ ! -f "$SKILL_ROOT/SKILL.md" ]; then
-  SKILL_ROOT="${HOME}/.cursor/skills/cua-router-basic"
-fi
+SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-${HOME}/.automan/claude-code-agents/cua-agent/skills/cua-router-basic}"
+[ -f "$SKILL_ROOT/SKILL.md" ] || SKILL_ROOT="${HOME}/.automan/skills/cua-router-basic"
+[ -f "$SKILL_ROOT/SKILL.md" ] || SKILL_ROOT="${HOME}/.cursor/skills/cua-router-basic"
 bash "$SKILL_ROOT/scripts/daemon.sh" start
 bash "$SKILL_ROOT/scripts/exec.sh" 'nodeRepl.write("ok")'
 ```

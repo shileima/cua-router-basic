@@ -9,7 +9,7 @@ from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 VENDOR = SKILL_ROOT / "vendor"
-RUNTIME = SKILL_ROOT / "runtime"
+RUNTIME = Path(os.environ.get("CUA_ROUTER_RUNTIME_DIR", SKILL_ROOT / "runtime")).expanduser()
 
 
 def codex_bin() -> Path:
@@ -92,6 +92,12 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def write_text_if_changed(path: Path, content: str) -> None:
+    if path.exists() and path.read_text(encoding="utf-8") == content:
+        return
+    path.write_text(content, encoding="utf-8")
+
+
 def ensure_vendor() -> None:
     required = [
         codex_bin(),
@@ -135,8 +141,7 @@ def write_runtime_config() -> Path:
         ]
     )
 
-    config_path.write_text(
-        f'''ask_for_approval = "never"
+    config_content = f'''ask_for_approval = "never"
 sandbox_mode = "danger-full-access"
 web_search = "disabled"
 
@@ -166,9 +171,8 @@ startup_timeout_sec = 120
 [mcp_servers.event_stream.env]
 CODEX_HOME = "{es_home}"
 SKY_CUA_SERVICE_PATH = "{computer_use_path}"
-''',
-        encoding="utf-8",
-    )
+'''
+    write_text_if_changed(config_path, config_content)
 
     manifest = {
         "skill_root": skill_root,
@@ -179,8 +183,5 @@ SKY_CUA_SERVICE_PATH = "{computer_use_path}"
         "computer_use_app": computer_use_path,
         "sky_client_sha256": sky_sha,
     }
-    (RUNTIME / "vendor-paths.json").write_text(
-        json.dumps(manifest, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    write_text_if_changed(RUNTIME / "vendor-paths.json", json.dumps(manifest, indent=2) + "\n")
     return config_path

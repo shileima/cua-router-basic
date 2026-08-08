@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Register cua-router-basic in ~/.automan (Claude Code agents skills symlink).
+# Register cua-router-basic and bundled companion skills in ~/.automan.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,8 +13,13 @@ usage() {
   cat <<EOF
 Usage: $0 [options]
 
-When ~/.automan/skills exists, ensure:
-  - ~/.automan/claude-code-agents/main/skills/cua-router-basic -> ../../../skills/cua-router-basic
+Install cua-router-basic (+ bundled record-desk-basic) into the automan
+cua-agent profile:
+  ~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic
+  ~/.automan/claude-code-agents/cua-agent/skills/record-desk-basic
+
+Also cleans up any legacy install at ~/.automan/skills/{cua-router-basic,record-desk-basic}
+and stale symlinks in other agent profiles.
 
 Options:
   --skill-root PATH   Skill root (default: parent of scripts/)
@@ -31,7 +36,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ -f "$SKILL_ROOT/SKILL.md" ] || die "invalid skill root (missing SKILL.md): $SKILL_ROOT"
-automan_skills_available || die "~/.automan/skills not found; nothing to sync"
+automan_available || die "automan profile not found: $(automan_profile_dir)"
 
 sync_automan_install "$SKILL_ROOT"
 info "automan sync complete for $SKILL_ROOT"

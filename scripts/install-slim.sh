@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 common_init
 
 SOURCE="$COMMON_SKILL_ROOT"
-TARGET="${CUA_ROUTER_INSTALL_DIR:-$HOME/.automan/skills/cua-router-basic}"
+TARGET="${CUA_ROUTER_INSTALL_DIR:-$(default_install_dir)}"
 GIT_URL=""
 INSTALL_CURSOR=1
 FORCE=0
@@ -21,7 +21,8 @@ Copy or clone the slim cua-router-basic package (~50 KB) without vendor/.
 
 Options:
   --source PATH       Local skill root to copy from (default: this repo)
-  --target PATH       Install destination (default: ~/.automan/skills/cua-router-basic)
+  --target PATH       Install destination (default: automan cua-agent profile if
+                      present, else ~/.cursor/skills/cua-router-basic)
   --git-url URL       Clone from git instead of copying --source
   --no-cursor         Skip install-cursor.sh (no ~/.cursor/skills symlink / pin)
   --force             Replace existing target directory
@@ -75,6 +76,9 @@ install_from_source() {
   cp "$SOURCE/SKILL.md" "$TARGET/"
   [ -f "$SOURCE/.meta.json" ] && cp "$SOURCE/.meta.json" "$TARGET/"
   cp -R "$SOURCE/scripts/." "$TARGET/scripts/"
+  if [ -d "$SOURCE/record-desk-basic" ]; then
+    cp -R "$SOURCE/record-desk-basic" "$TARGET/"
+  fi
   if [ -f "$SOURCE/vendor/README.md" ]; then
     cp "$SOURCE/vendor/README.md" "$TARGET/vendor/"
   fi

@@ -37,14 +37,17 @@ Usage: $0 [options]
 Install cua-router-basic for Agent use without requiring a prior git clone.
 
 Defaults:
-  --target   ~/.automan/skills/cua-router-basic if ~/.automan/skills exists,
+  --target   ~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic
+             if the cua-agent profile exists,
              else ~/.cursor/skills/cua-router-basic (or CUA_ROUTER_INSTALL_DIR)
   --version  latest from GitHub main/.meta.json (or CUA_ROUTER_VERSION)
 
-When ~/.automan/skills exists, also registers:
-  ~/.automan/claude-code-agents/main/skills/cua-router-basic
-    -> ../../../skills/cua-router-basic
-  and ~/.cursor/skills/cua-router-basic -> skill root (via install-cursor.sh)
+When the automan cua-agent profile exists, also:
+  - installs bundled companion skill record-desk-basic alongside, at
+    ~/.automan/claude-code-agents/cua-agent/skills/record-desk-basic
+  - removes legacy install at ~/.automan/skills/{cua-router-basic,record-desk-basic}
+    and stale symlinks in other agent profiles
+  - registers ~/.cursor/skills/cua-router-basic -> skill root (via install-cursor.sh)
 
 Options:
   --target PATH       Install destination

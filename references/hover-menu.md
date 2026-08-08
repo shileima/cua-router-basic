@@ -17,8 +17,9 @@
 swift -e 'import CoreGraphics; import Foundation; let p = CGPoint(x: 360, y: 210); if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left) { e.post(tap: .cghidEventTap) }; Thread.sleep(forTimeInterval: 1.0)'
 
 # 2. 点击 hover 后出现的右上角菜单热区，并重新读取 AX Tree 验证菜单出现
-SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-${HOME}/.automan/skills/cua-router-basic}"
-if [ ! -f "$SKILL_ROOT/SKILL.md" ]; then SKILL_ROOT="${HOME}/.cursor/skills/cua-router-basic"; fi
+SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-${HOME}/.automan/claude-code-agents/cua-agent/skills/cua-router-basic}"
+[ -f "$SKILL_ROOT/SKILL.md" ] || SKILL_ROOT="${HOME}/.automan/skills/cua-router-basic"
+[ -f "$SKILL_ROOT/SKILL.md" ] || SKILL_ROOT="${HOME}/.cursor/skills/cua-router-basic"
 bash "$SKILL_ROOT/scripts/exec.sh" -t 60000 '{
   await sky.click({ app: "com.google.Chrome", x: 485, y: 172 });
   await new Promise(r => setTimeout(r, 1000));

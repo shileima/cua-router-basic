@@ -249,7 +249,7 @@ tail -100 /tmp/cua-router.log
 新装环境或改动后跑一遍：
 
 ```bash
-SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-$HOME/.automan/skills/cua-router-basic}"
+SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-$HOME/.automan/claude-code-agents/cua-agent/skills/cua-router-basic}"
 
 # 1. 服务在线
 bash "$SKILL_ROOT/scripts/daemon.sh" status

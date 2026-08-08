@@ -10,22 +10,104 @@ source "$SCRIPT_DIR/lib/common.sh"
 PORT="${CUA_ROUTER_PORT:-18901}"
 PID_FILE="${CUA_ROUTER_PID_FILE:-/tmp/cua-router.pid}"
 LOG_FILE="${CUA_ROUTER_LOG_FILE:-/tmp/cua-router.log}"
+BASE="http://localhost:${PORT}"
 
 CUA_SERVICE_BUNDLE_ID="${CUA_SERVICE_BUNDLE_ID:-com.openai.sky.CUAService}"
 CUA_SERVICE_SOCKET="${CUA_SERVICE_SOCKET:-$HOME/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/IPC/computeruse.sock}"
 CUA_SERVICE_WAIT_SECS="${CUA_SERVICE_WAIT_SECS:-20}"
 
+cua_runtime_dir() {
+  if [ -n "${CUA_ROUTER_RUNTIME_DIR:-}" ]; then
+    printf '%s' "$CUA_ROUTER_RUNTIME_DIR"
+    return 0
+  fi
+
+  local default_runtime="$SKILL_ROOT/runtime"
+  local probe="$default_runtime/.write-test"
+  if mkdir -p "$default_runtime" 2>/dev/null && (: > "$probe") 2>/dev/null; then
+    rm -f "$probe"
+    printf '%s' "$default_runtime"
+    return 0
+  fi
+
+  printf '/tmp/cua-router-basic-runtime-%s' "$(id -u 2>/dev/null || printf '%s' "$USER")"
+}
+
+export_cua_runtime_dir() {
+  CUA_ROUTER_RUNTIME_DIR="$(cua_runtime_dir)"
+  export CUA_ROUTER_RUNTIME_DIR
+}
+
+router_health_json() {
+  curl -sf "$BASE/health" 2>/dev/null
+}
+
 # 浅探针（liveness）：仅验证 HTTP + app-server + node_repl 能跑 JS。
 health_check() {
-  curl -sf -X POST "http://localhost:${PORT}/exec" \
+  if [ "${CUA_ROUTER_HEALTH_MODE:-exec}" = "app-server" ]; then
+    router_health_json \
+      | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ready") else 1)'
+    return $?
+  fi
+
+  curl -sf -X POST "$BASE/exec" \
     -H 'Content-Type: application/json' \
     -d '{"code":"nodeRepl.write(\"ok\")","timeout_ms":8000}' \
     2>/dev/null | grep -qE '"text"[[:space:]]*:[[:space:]]*"ok"'
 }
 
+router_identity_matches_current() {
+  local body
+  body="$(router_health_json)" || return 1
+  python3 - "$SKILL_ROOT" "$body" <<'PY'
+import json
+import os
+import sys
+
+expected = os.path.realpath(sys.argv[1])
+try:
+    data = json.loads(sys.argv[2])
+except Exception:
+    sys.exit(1)
+
+actual = data.get("skill_root") or ""
+service = data.get("service") or ""
+if service == "cua-router-basic" and actual and os.path.realpath(actual) == expected:
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+router_identity_summary() {
+  local body
+  body="$(router_health_json)" || {
+    echo "[cua-router] active service identity: unavailable"
+    return 1
+  }
+  python3 - "$SKILL_ROOT" "$body" <<'PY'
+import json
+import os
+import sys
+
+expected = os.path.realpath(sys.argv[1])
+try:
+    data = json.loads(sys.argv[2])
+except Exception as exc:
+    print(f"[cua-router] active service identity: invalid health response ({exc})")
+    print(f"[cua-router] expected root: {expected}")
+    sys.exit(1)
+
+actual = data.get("skill_root") or "<unknown>"
+version = data.get("version") or "<unknown>"
+pid = data.get("pid") or "<unknown>"
+print(f"[cua-router] active service: root={actual} version={version} pid={pid}")
+print(f"[cua-router] expected root: {expected}")
+PY
+}
+
 # 深探针（readiness）：调用 /ready，真正强制 sky 原生管道连一次 CUAService。
 health_check_deep() {
-  curl -sf -X POST "http://localhost:${PORT}/ready" \
+  curl -sf -X POST "$BASE/ready" \
     -H 'Content-Type: application/json' -d '{"deep":true}' \
     2>/dev/null | grep -qE '"ready"[[:space:]]*:[[:space:]]*true'
 }
@@ -45,8 +127,9 @@ cua_service_app_path() {
 # native-pipe 硬编码的 5s 冷启动窗口内完成 open→初始化→建 socket，冷启动常超时
 # → "Sky Computer Use native pipe startup failed"。这里提前把它叫起来并等 socket 就绪。
 cua_service_ensure() {
+  local force="${1:-0}"
   [ "$(uname -s)" = "Darwin" ] || return 0
-  cua_service_running && return 0
+  [ "$force" != "1" ] && cua_service_running && return 0
 
   if ! open -g -b "$CUA_SERVICE_BUNDLE_ID" >/dev/null 2>&1; then
     local app
@@ -82,7 +165,6 @@ cua_preflight_chrome_warn() {
 }
 
 # 浅探活通过后调用：Chrome 预检 + 预热 CUAService + 深就绪校验。
-# 就绪失败不阻断 start（liveness 已 OK），只告警并提示 `daemon.sh ready` 排查。
 cua_finalize_ready() {
   cua_preflight_chrome_warn
 
@@ -92,7 +174,7 @@ cua_finalize_ready() {
   fi
 
   echo "[cua-router] cua readiness: 未就绪，正在预热 CUAService(${CUA_SERVICE_BUNDLE_ID})..." >&2
-  cua_service_ensure \
+  cua_service_ensure 1 \
     || echo "[cua-router] warning: 等待 ${CUA_SERVICE_WAIT_SECS}s 后 CUAService socket 仍未出现" >&2
 
   local i
@@ -105,16 +187,38 @@ cua_finalize_ready() {
   done
 
   echo "[cua-router] warning: cua 未就绪(sky 原生管道未连通)。执行 'bash $0 ready' 查看原因。" >&2
-  return 0
+  return 1
 }
 
 cmd_start() {
   if health_check; then
-    echo "[cua-router] already healthy on http://localhost:${PORT}"
-    pid="$(read_pid || true)"
-    [ -n "${pid:-}" ] && echo "[cua-router] pid=${pid}"
-    cua_finalize_ready
-    return 0
+    if router_identity_matches_current; then
+      echo "[cua-router] already healthy on ${BASE}"
+      pid="$(read_pid || true)"
+      [ -n "${pid:-}" ] && echo "[cua-router] pid=${pid}"
+      if cua_finalize_ready; then
+        return 0
+      fi
+      if [ "${CUA_ROUTER_AUTO_RESTART_ON_NOT_READY:-1}" = "1" ] \
+        && [ "${CUA_ROUTER_READY_RESTARTED:-0}" != "1" ]; then
+        echo "[cua-router] sky 未就绪，自动重启 cua-router 以重建 app-server 连接..." >&2
+        cmd_stop
+        sleep 2
+        CUA_ROUTER_READY_RESTARTED=1 cmd_start
+        return $?
+      fi
+      return 0
+    fi
+
+    echo "[cua-router] 检测到 ${BASE} 上已有其他 cua-router 安装实例，正在切换到当前安装..." >&2
+    router_identity_summary >&2 || true
+    cmd_stop
+    sleep 2
+    if health_check; then
+      echo "[cua-router] error: 无法停止端口 ${PORT} 上的不匹配服务" >&2
+      router_identity_summary >&2 || true
+      return 1
+    fi
   fi
 
   old_pid="$(read_pid || true)"
@@ -135,6 +239,9 @@ cmd_start() {
     bash "$SCRIPT_DIR/install-full.sh" --skill-root "$SKILL_ROOT" --vendor-mode auto --no-cursor
   fi
 
+  export_cua_runtime_dir
+  echo "[cua-router] runtime=${CUA_ROUTER_RUNTIME_DIR}"
+
   nohup python3 "$SCRIPT_DIR/cua-router.py" --port "$PORT" >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
   echo "[cua-router] started pid=$(cat "$PID_FILE"), log=${LOG_FILE}"
@@ -142,7 +249,7 @@ cmd_start() {
   for i in $(seq 1 45); do
     if health_check; then
       echo "[cua-router] ready after ${i}s"
-      cua_finalize_ready
+      cua_finalize_ready || true
       return 0
     fi
     sleep 1
@@ -206,8 +313,14 @@ cmd_status() {
 
   pid="$(read_pid || true)"
   if health_check; then
-    echo "[cua-router] running and healthy on http://localhost:${PORT}"
+    echo "[cua-router] running and healthy on ${BASE}"
     [ -n "${pid:-}" ] && echo "[cua-router] pid=${pid}"
+    if router_identity_matches_current; then
+      echo "[cua-router] identity: current install"
+    else
+      echo "[cua-router] warning: identity mismatch with current install" >&2
+      router_identity_summary >&2 || true
+    fi
     if cua_service_running; then
       echo "[cua-router] CUAService socket: present"
     else
@@ -239,7 +352,7 @@ cmd_ready() {
     echo '{"ready":false,"live":false,"sky":false,"socket":false,"reason":"router_down"}'
     return 1
   fi
-  curl -s -X POST "http://localhost:${PORT}/ready" \
+  curl -s -X POST "$BASE/ready" \
     -H 'Content-Type: application/json' -d '{"deep":true}' 2>/dev/null
   echo
 }

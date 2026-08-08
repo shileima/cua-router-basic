@@ -37,7 +37,7 @@ node --test tests/test_computer_use_client.mjs
 python3 -m unittest tests.test_cua_router
 
 # 3. 同步到 automan 安装目录（不覆盖 vendor / runtime）
-AUTOMAN_ROOT="$HOME/.automan/skills/cua-router-basic"
+AUTOMAN_ROOT="$HOME/.automan/claude-code-agents/cua-agent/skills/cua-router-basic"
 mkdir -p "$AUTOMAN_ROOT/references" "$AUTOMAN_ROOT/tests"
 cp .meta.json                          "$AUTOMAN_ROOT/"
 cp SKILL.md                            "$AUTOMAN_ROOT/"
@@ -122,7 +122,7 @@ bash scripts/release.sh 0.5.0
 
 ```bash
 # 从 git 历史取上一个 beta 前的版本
-AUTOMAN_ROOT="$HOME/.automan/skills/cua-router-basic"
+AUTOMAN_ROOT="$HOME/.automan/claude-code-agents/cua-agent/skills/cua-router-basic"
 git -C /Users/shilei/code/cua-router-basic show HEAD~1:scripts/computer-use-client.mjs \
   > "$AUTOMAN_ROOT/scripts/computer-use-client.mjs"
 bash "$AUTOMAN_ROOT/scripts/daemon.sh" restart

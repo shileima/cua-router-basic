@@ -20,7 +20,8 @@ usage() {
   cat <<EOF
 Usage: $0 [options]
 
-Ensure vendor/ is present, optionally run slim install first, then register in Cursor.
+Ensure vendor/ is present, optionally run slim install first, then register in Cursor/Automan.
+When Automan is available, the bundled record-desk-basic companion skill is installed too.
 
 Vendor sources (--vendor-mode):
   auto          Prefer ChatGPT.app extract; fall back to release download (default)

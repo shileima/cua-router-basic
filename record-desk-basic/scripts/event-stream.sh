@@ -48,18 +48,50 @@ esac
 
 CUA_ROOT="$(resolve_cua_root "$SKILL_ROOT")"
 
+router_health_json() {
+  curl -sf "$BASE/health" 2>/dev/null
+}
+
 router_healthy() {
-  curl -sf -X POST "$BASE/exec" \
-    -H 'Content-Type: application/json' \
-    -d '{"code":"nodeRepl.write(\"ok\")","timeout_ms":8000}' \
-    2>/dev/null | grep -qE '"text"[[:space:]]*:[[:space:]]*"ok"'
+  router_health_json \
+    | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ready") else 1)'
+}
+
+router_matches_cua_root() {
+  local body
+  body="$(router_health_json)" || return 1
+  python3 - "$CUA_ROOT" "$body" <<'PY'
+import json
+import os
+import sys
+
+expected = os.path.realpath(sys.argv[1])
+try:
+    data = json.loads(sys.argv[2])
+except Exception:
+    sys.exit(1)
+
+actual = data.get("skill_root") or ""
+service = data.get("service") or ""
+if service == "cua-router-basic" and actual and os.path.realpath(actual) == expected:
+    sys.exit(0)
+sys.exit(1)
+PY
 }
 
 # 确保 cua-router 守护进程在跑（其 app-server 托管 event_stream mcp，并已连通 CUAService）。
-if ! router_healthy; then
-  rdb_info "cua-router 未就绪，正在启动守护进程..."
-  bash "$CUA_ROOT/scripts/daemon.sh" start >&2 || rdb_die "无法启动 cua-router 守护进程"
+if ! router_matches_cua_root; then
+  if router_healthy; then
+    rdb_info "cua-router 已运行但不是当前安装，正在切换到：$CUA_ROOT"
+  else
+    rdb_info "cua-router 未就绪，正在启动守护进程..."
+  fi
+  CUA_ROUTER_HEALTH_MODE=app-server bash "$CUA_ROOT/scripts/daemon.sh" start >&2 \
+    || rdb_die "无法启动 cua-router 守护进程"
 fi
+
+router_matches_cua_root \
+  || rdb_die "cua-router 服务身份校验失败，端口 ${PORT} 仍不是当前安装：$CUA_ROOT"
 
 resp="$(curl -sf -X POST "$BASE/record" \
   -H 'Content-Type: application/json' \

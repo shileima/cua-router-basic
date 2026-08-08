@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from vendor_paths import (
     client_mjs,
+    computer_use_app,
     codex_bin,
     ensure_vendor,
     write_runtime_config,
@@ -78,6 +79,27 @@ def wrap_js_for_repl(code: str) -> str:
 CUA_SERVICE_SOCKET = os.path.expanduser(
     "~/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/IPC/computeruse.sock"
 )
+
+
+def _skill_version() -> str:
+    try:
+        meta = json.loads((SKILL_ROOT / ".meta.json").read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    return str(meta.get("version", ""))
+
+
+def router_identity() -> dict:
+    """Stable identity used by shell wrappers to reject stale router daemons."""
+    return {
+        "service": "cua-router-basic",
+        "skill_root": str(SKILL_ROOT),
+        "runtime_dir": str(RUNTIME),
+        "computer_use_app": str(computer_use_app()),
+        "codex_bin": str(codex_bin()),
+        "version": _skill_version(),
+        "pid": os.getpid(),
+    }
 
 # ──────────────────────────────────────────────
 # app-server session (singleton, lazy-init)
@@ -308,6 +330,7 @@ def probe_ready(deep: bool = True) -> dict:
         "reason": "",
         "ts": int(time.time()),
     }
+    res.update(router_identity())
 
     try:
         st = os.stat(CUA_SERVICE_SOCKET)
@@ -350,6 +373,28 @@ def probe_ready(deep: bool = True) -> dict:
         res["reason"] = "ok"
         # If sky works the socket is necessarily up, even if the stat() above raced.
         res["socket"] = True
+    return res
+
+
+def probe_app_server_live() -> dict:
+    res = {
+        "ready": False,
+        "live": False,
+        "sky": False,
+        "socket": False,
+        "reason": "",
+        "ts": int(time.time()),
+    }
+    res.update(router_identity())
+    try:
+        _session.ensure()
+    except Exception as exc:  # noqa: BLE001 - surfaced as reason
+        res["reason"] = f"router_error: {exc}"
+        return res
+
+    res["ready"] = True
+    res["live"] = True
+    res["reason"] = "app_server_live"
     return res
 
 
@@ -461,6 +506,14 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._write_json({"ready": False, "live": False, "sky": False,
                               "socket": False, "reason": f"error: {exc}"}, 200)
 
+    def _handle_health(self):
+        try:
+            self._write_json(probe_app_server_live())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[health] error: {exc}", flush=True)
+            self._write_json({"ready": False, "live": False, "sky": False,
+                              "socket": False, "reason": f"error: {exc}"}, 200)
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         # /ready → full deep probe (default);  /health → shallow liveness only
@@ -468,7 +521,7 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._handle_ready(deep=True)
             return
         if path == "/health":
-            self._handle_ready(deep=False)
+            self._handle_health()
             return
         self.send_response(404)
         self.end_headers()

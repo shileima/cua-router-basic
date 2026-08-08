@@ -23,9 +23,11 @@ curl -fsSL https://raw.githubusercontent.com/shileima/cua-router-basic/main/scri
 
 脚本会自动：下载 slim 技能包 → bootstrap vendor（ChatGPT 提取或 Release 下载）→ 注册到 `~/.cursor/skills` 并 Pin。
 
-若本机存在 `~/.automan/skills` 目录，默认安装到 `~/.automan/skills/cua-router-basic`，并同步：
-- `~/.cursor/skills/cua-router-basic` → 技能目录（符号链接）
-- `~/.automan/claude-code-agents/main/skills/cua-router-basic` → `../../../skills/cua-router-basic`
+若本机存在 automan `cua-agent` profile（`~/.automan/claude-code-agents/cua-agent/`），脚本会：
+- 把 cua-router-basic **实体安装**到 `~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic`
+- 把 bundle 里的 `record-desk-basic` **一并实体安装**到同目录的 `record-desk-basic`
+- 同时注册 `~/.cursor/skills/cua-router-basic` → 技能目录（符号链接）
+- 自动清理旧布局：`~/.automan/skills/{cua-router-basic,record-desk-basic}` 与其他 profile 中指向旧位置的 symlink
 
 ### 方式 B：Git clone + 一键安装
 
@@ -68,18 +70,19 @@ bash ~/.cursor/skills/cua-router-basic/scripts/install-full.sh --vendor-mode aut
 适合 CI 或已有 vendor 的场景：
 
 ```bash
-git clone git@github.com:shileima/cua-router-basic.git ~/.automan/skills/cua-router-basic
-bash ~/.automan/skills/cua-router-basic/scripts/install-slim.sh --no-cursor
-bash ~/.automan/skills/cua-router-basic/scripts/download-vendor.sh
-bash ~/.automan/skills/cua-router-basic/scripts/install-cursor.sh
+INSTALL_DIR=~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic
+git clone git@github.com:shileima/cua-router-basic.git "$INSTALL_DIR"
+bash "$INSTALL_DIR/scripts/install-slim.sh" --no-cursor
+bash "$INSTALL_DIR/scripts/download-vendor.sh"
+bash "$INSTALL_DIR/scripts/install-cursor.sh"
 ```
 
 ### 方式 E：指定安装目录
 
 ```bash
-bash scripts/install-full.sh --target ~/.automan/skills/cua-router-basic
+bash scripts/install-full.sh --target ~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic
 # 或
-bash scripts/install-remote.sh --target ~/.automan/skills/cua-router-basic
+bash scripts/install-remote.sh --target ~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic
 ```
 
 ---
@@ -111,7 +114,7 @@ cua-router-basic/
 ├── .claude-plugin/       # Claude Code Plugin + marketplace
 ├── scripts/              # 安装、服务、发布脚本
 │   ├── install-remote.sh # Agent 远程一键安装
-│   ├── install-automan.sh # 同步 ~/.automan/claude-code-agents 技能符号链接
+│   ├── install-automan.sh # 安装到 ~/.automan/claude-code-agents/cua-agent/skills
 │   ├── install-full.sh   # 完整安装
 │   ├── install-slim.sh   # 仅技能本体
 │   ├── download-vendor.sh
@@ -141,7 +144,7 @@ cua-router-basic/
 | `CUA_ROUTER_INSTALL_DIR` | 覆盖默认安装目录 |
 | `CHATGPT_RESOURCES` | setup-vendor 源路径，默认 `/Applications/ChatGPT.app/Contents/Resources` |
 
-默认安装目录：若存在 `~/.automan/skills` 则为 `~/.automan/skills/cua-router-basic`，否则为 `~/.cursor/skills/cua-router-basic`。
+默认安装目录：若存在 automan `cua-agent` profile 目录 `~/.automan/claude-code-agents/cua-agent/`，则安装到 `~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic`；否则安装到 `~/.cursor/skills/cua-router-basic`。
 
 ---
 
@@ -216,7 +219,7 @@ bash scripts/daemon.sh start
 ### 升级已安装技能
 
 ```bash
-cd ~/.automan/skills/cua-router-basic   # 或你的安装目录
+cd ~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic   # 或你的安装目录
 git pull origin main
 bash scripts/install-full.sh --vendor-mode download --force-vendor
 bash scripts/daemon.sh restart

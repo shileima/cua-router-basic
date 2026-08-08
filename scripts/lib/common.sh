@@ -146,20 +146,51 @@ default_git_url() {
   printf 'https://github.com/%s.git' "$(github_repo)"
 }
 
-automan_skills_dir() {
-  printf '%s' "${CUA_ROUTER_AUTOMAN_SKILLS_DIR:-$HOME/.automan/skills}"
+automan_root_dir() {
+  printf '%s' "${CUA_ROUTER_AUTOMAN_ROOT:-$HOME/.automan}"
+}
+
+automan_agents_root_dir() {
+  printf '%s/claude-code-agents' "$(automan_root_dir)"
+}
+
+automan_target_profile() {
+  printf '%s' "${CUA_ROUTER_AUTOMAN_PROFILE:-cua-agent}"
+}
+
+automan_profile_dir() {
+  if [ -n "${CUA_ROUTER_AUTOMAN_PROFILE_DIR:-}" ]; then
+    printf '%s' "$CUA_ROUTER_AUTOMAN_PROFILE_DIR"
+    return 0
+  fi
+  printf '%s/%s' "$(automan_agents_root_dir)" "$(automan_target_profile)"
+}
+
+automan_profile_skills_dir() {
+  printf '%s/skills' "$(automan_profile_dir)"
 }
 
 automan_skill_dir() {
-  printf '%s/cua-router-basic' "$(automan_skills_dir)"
+  printf '%s/cua-router-basic' "$(automan_profile_skills_dir)"
 }
 
-claude_code_agents_main_skills_dir() {
-  printf '%s' "${CUA_ROUTER_CLAUDE_CODE_AGENTS_SKILLS_DIR:-$HOME/.automan/claude-code-agents/main/skills}"
+record_desk_automan_skill_dir() {
+  printf '%s/record-desk-basic' "$(automan_profile_skills_dir)"
 }
 
+legacy_automan_skills_dir() {
+  printf '%s' "${CUA_ROUTER_LEGACY_AUTOMAN_SKILLS_DIR:-$(automan_root_dir)/skills}"
+}
+
+# The target automan profile must exist before we consider automan integration.
+# We only require the profile *directory*; skills/ subdir will be created on demand.
+automan_available() {
+  [ -d "$(automan_profile_dir)" ]
+}
+
+# Back-compat alias: older callers may still ask "is automan available?".
 automan_skills_available() {
-  [ -d "$(automan_skills_dir)" ]
+  automan_available
 }
 
 default_install_dir() {
@@ -167,7 +198,7 @@ default_install_dir() {
     printf '%s' "$CUA_ROUTER_INSTALL_DIR"
     return 0
   fi
-  if automan_skills_available; then
+  if automan_available; then
     automan_skill_dir
     return 0
   fi
@@ -213,69 +244,115 @@ install_symlink_to_skill() {
   info "linked $link_path -> $skill_root"
 }
 
-# When ~/.automan/skills exists, register Claude Code agents skill symlink.
-sync_automan_claude_code_symlink() {
-  local skill_root="${1:-$(automan_skill_dir)}"
-  local agents_dir link_path automan_skills resolved_skill
-
-  automan_skills_available || return 0
-
-  agents_dir="$(claude_code_agents_main_skills_dir)"
-  if [ ! -d "$(dirname "$agents_dir")" ]; then
-    info "claude-code-agents main dir not found; skipping agents skill symlink"
-    return 0
-  fi
-
-  resolved_skill="$(cd "$skill_root" && pwd)"
-  automan_skills="$(cd "$(automan_skills_dir)" && pwd)"
-  link_path="$agents_dir/cua-router-basic"
-  ensure_install_parent "$link_path"
-
-  if [[ "$resolved_skill" == "$automan_skills/"* ]]; then
-    if [ -L "$link_path" ] && [ "$(readlink "$link_path")" = "../../../skills/cua-router-basic" ]; then
-      info "claude-code-agents symlink already correct: $link_path"
-      return 0
-    fi
-    if [ -e "$link_path" ] && [ ! -L "$link_path" ]; then
-      warn "backing up existing $link_path"
-      mv "$link_path" "${link_path}.bak.$(date +%s)"
-    elif [ -L "$link_path" ]; then
-      rm "$link_path"
-    fi
-    ln -s "../../../skills/cua-router-basic" "$link_path"
-    info "linked $link_path -> ../../../skills/cua-router-basic"
-    return 0
-  fi
-
-  install_symlink_to_skill "$resolved_skill" "$agents_dir" "cua-router-basic"
+record_desk_source_dir() {
+  local skill_root="$1"
+  local source="$skill_root/record-desk-basic"
+  [ -f "$source/SKILL.md" ] || return 1
+  printf '%s' "$source"
 }
 
-# Register skill in automan ecosystem: Claude Code agents symlink (+ optional copy).
-sync_automan_install() {
-  local skill_root="$1"
-  local automan_target resolved_skill resolved_automan
+# Install (rsync) skill source into target, preserving existing vendor/ when
+# already ready (avoid nuking 700+ MB on version bumps).
+_install_skill_to_target() {
+  local source="$1"
+  local target="$2"
+  local label="$3"
+  local resolved_source resolved_target
+  resolved_source="$(cd "$source" && pwd)"
+  resolved_target="$(cd "$target" 2>/dev/null && pwd || true)"
 
-  automan_skills_available || return 0
-
-  automan_target="$(automan_skill_dir)"
-  resolved_skill="$(cd "$skill_root" && pwd)"
-  resolved_automan="$(cd "$automan_target" 2>/dev/null && pwd || true)"
-
-  if [ "$resolved_skill" != "$resolved_automan" ]; then
-    if vendor_ready "$automan_target"; then
-      info "automan skill already present at $automan_target"
-    else
-      info "also installing skill copy to $automan_target"
-      ensure_install_parent "$automan_target"
-      rsync -a --delete \
-        --exclude '.DS_Store' \
-        "$resolved_skill/" "$automan_target/"
-    fi
-    sync_automan_claude_code_symlink "$automan_target"
+  if [ "$resolved_source" = "$resolved_target" ]; then
+    info "$label already at target: $target"
     return 0
   fi
 
-  sync_automan_claude_code_symlink "$resolved_skill"
+  if [ -L "$target" ]; then
+    rm "$target"
+  elif [ -e "$target" ] && [ ! -d "$target" ]; then
+    warn "backing up existing $target"
+    mv "$target" "${target}.bak.$(date +%s)"
+  fi
+
+  ensure_install_parent "$target"
+  local -a rsync_args=(-a --exclude '.DS_Store')
+  if vendor_ready "$target"; then
+    info "installing $label -> $target (preserving existing vendor/)"
+    rsync_args+=(--exclude 'vendor/**')
+  else
+    info "installing $label -> $target"
+    rsync_args+=(--delete)
+  fi
+  rsync "${rsync_args[@]}" "$resolved_source/" "$target/"
+}
+
+sync_record_desk_basic_install() {
+  local skill_root="$1"
+  local source target
+
+  automan_available || return 0
+  if ! source="$(record_desk_source_dir "$skill_root")"; then
+    warn "record-desk-basic not bundled under $skill_root; skipping companion skill install"
+    return 0
+  fi
+
+  target="$(record_desk_automan_skill_dir)"
+  _install_skill_to_target "$source" "$target" "companion skill record-desk-basic"
+}
+
+# Remove pre-0.5 install layout so agents don't resolve two copies of the skill.
+# We only touch names we own: cua-router-basic and record-desk-basic. Any other
+# skill in ~/.automan/skills or in other profiles is left untouched.
+cleanup_legacy_automan_layout() {
+  local legacy_skills entry name legacy_agents_root profile skill_link target
+  legacy_skills="$(legacy_automan_skills_dir)"
+  target="$(automan_profile_dir)"
+
+  for name in cua-router-basic record-desk-basic; do
+    entry="$legacy_skills/$name"
+    if [ -L "$entry" ]; then
+      info "cleanup: removing legacy symlink $entry"
+      rm "$entry"
+    elif [ -d "$entry" ]; then
+      info "cleanup: removing legacy install dir $entry"
+      rm -rf "$entry"
+    fi
+  done
+
+  legacy_agents_root="$(automan_agents_root_dir)"
+  [ -d "$legacy_agents_root" ] || return 0
+  for profile in "$legacy_agents_root"/*; do
+    [ -d "$profile" ] || continue
+    [ "$profile" = "$target" ] && continue
+    for name in cua-router-basic record-desk-basic; do
+      skill_link="$profile/skills/$name"
+      [ -e "$skill_link" ] || [ -L "$skill_link" ] || continue
+      if [ -L "$skill_link" ]; then
+        info "cleanup: removing legacy profile symlink $skill_link"
+        rm "$skill_link"
+      else
+        warn "cleanup: legacy real dir at $skill_link — backing up (not deleting)"
+        mv "$skill_link" "${skill_link}.bak.$(date +%s)"
+      fi
+    done
+  done
+}
+
+# Register skill in automan ecosystem: install into the target profile's
+# skills/ directory (no cross-profile symlinks), then clean up legacy layout.
+sync_automan_install() {
+  local skill_root="$1"
+  local target
+
+  automan_available || return 0
+
+  target="$(automan_skill_dir)"
+  _install_skill_to_target "$skill_root" "$target" "cua-router-basic"
+
+  local resolved_skill
+  resolved_skill="$(cd "$skill_root" && pwd)"
+  sync_record_desk_basic_install "$resolved_skill"
+
+  cleanup_legacy_automan_layout
 }
 
 fetch_remote_version() {

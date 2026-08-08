@@ -61,6 +61,7 @@ tar -czf "$slim_path" \
   SKILL.md \
   .meta.json \
   scripts \
+  record-desk-basic \
   vendor/README.md \
   vendor/.gitkeep
 

@@ -1,0 +1,34 @@
+{
+  "name": "record-desk-basic",
+  "version": "0.1.0",
+  "description": "Record what I'm doing on my Mac and turn it into a reusable, Computer-Use replayable skill",
+  "author": {
+    "name": "shileima"
+  },
+  "homepage": "https://github.com/shileima/cua-router-basic",
+  "license": "MIT",
+  "keywords": [
+    "record-and-replay",
+    "macos",
+    "accessibility",
+    "recording",
+    "replay",
+    "skills",
+    "automation",
+    "computer-use",
+    "cua-router"
+  ],
+  "skills": "./",
+  "interface": {
+    "displayName": "Record Desk Basic",
+    "shortDescription": "录制我的桌面操作并转成可回放技能",
+    "longDescription": "复用 cua-router-basic 内置的 SkyComputerUseClient，提供 Record & Replay（event-stream）录制能力：录制鼠标、键盘与窗口内容（最长 30 分钟），再把录制转成依赖 Computer Use 高效回放的技能。录制由 cua-router-basic 的 codex app-server 托管驱动，首次需授予屏幕录制与辅助功能权限。",
+    "developerName": "shileima",
+    "category": "Productivity",
+    "defaultPrompt": [
+      "录制我的工作流并转成可复用技能",
+      "看我操作一遍，然后据此创建技能",
+      "开始录制，我做完告诉你"
+    ]
+  }
+}

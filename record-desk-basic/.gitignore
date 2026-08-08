@@ -1,0 +1,3 @@
+# 录制运行时产物与隔离 CODEX_HOME（含指向 vendor 的符号链接、events.jsonl 等）
+runtime/
+.DS_Store

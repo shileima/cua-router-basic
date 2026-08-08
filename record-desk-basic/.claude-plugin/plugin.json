@@ -1,0 +1,19 @@
+{
+  "name": "record-desk-basic",
+  "description": "macOS 桌面录制→回放→转技能：内置 Record & Replay（event-stream），复用 cua-router-basic 的 SkyComputerUseClient",
+  "version": "0.1.0",
+  "author": {
+    "name": "shileima"
+  },
+  "homepage": "https://github.com/shileima/cua-router-basic",
+  "repository": "https://github.com/shileima/cua-router-basic",
+  "license": "MIT",
+  "keywords": [
+    "record-and-replay",
+    "computer-use",
+    "cua-router",
+    "recording",
+    "replay",
+    "macos"
+  ]
+}

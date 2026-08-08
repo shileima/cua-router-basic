@@ -39,8 +39,12 @@ def sky_module_dir() -> Path:
     return node_modules_dir() / "@oai" / "sky"
 
 
+def computer_use_dir() -> Path:
+    return VENDOR / "computer-use"
+
+
 def computer_use_app() -> Path:
-    return VENDOR / "computer-use" / "Codex Computer Use.app"
+    return computer_use_dir() / "Codex Computer Use.app"
 
 
 def sky_client_bin() -> Path:
@@ -48,6 +52,32 @@ def sky_client_bin() -> Path:
         computer_use_app()
         / "Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
     )
+
+
+def event_stream_home() -> Path:
+    """Dedicated CODEX_HOME for the event-stream mcp child.
+
+    The event-stream client resolves the runtime app from
+    ``$CODEX_HOME/computer-use/Codex Computer Use.app``. We keep it isolated
+    from the app-server's own runtime dir so recording state never collides
+    with node_repl / computer-use state.
+    """
+    return RUNTIME / "event-stream-home"
+
+
+def ensure_event_stream_home() -> Path:
+    """Create the event-stream CODEX_HOME with a computer-use symlink."""
+    home = event_stream_home()
+    home.mkdir(parents=True, exist_ok=True)
+    link = home / "computer-use"
+    target = computer_use_dir()
+    if link.is_symlink():
+        if os.readlink(link) != str(target):
+            link.unlink()
+            link.symlink_to(target)
+    elif not link.exists():
+        link.symlink_to(target)
+    return home
 
 
 def client_mjs() -> Path:
@@ -92,6 +122,8 @@ def write_runtime_config() -> Path:
     module_dirs = str(node_modules_dir())
     codex_path = str(codex_bin())
     computer_use_path = str(computer_use_app())
+    sky_client_path = str(sky_client_bin())
+    es_home = str(ensure_event_stream_home())
     sky_sha = sha256_file(sky_client_bin())
 
     # Keep known Chrome plugin hashes for compatibility; append bundled sky client hash.
@@ -125,6 +157,15 @@ NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "{trusted_hashes}"
 NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
 SKY_CUA_SERVICE_PATH = "{computer_use_path}"
 CODEX_CLI_PATH = "{codex_path}"
+
+[mcp_servers.event_stream]
+command = "{sky_client_path}"
+args = ["event-stream", "mcp"]
+startup_timeout_sec = 120
+
+[mcp_servers.event_stream.env]
+CODEX_HOME = "{es_home}"
+SKY_CUA_SERVICE_PATH = "{computer_use_path}"
 ''',
         encoding="utf-8",
     )

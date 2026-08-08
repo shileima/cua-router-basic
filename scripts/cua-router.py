@@ -202,6 +202,28 @@ class AppServerSession:
             return {"content": [{"type": "text", "text": "timeout"}], "isError": True}
         return r.get("result", {"content": [{"type": "text", "text": "no result"}], "isError": True})
 
+    def call_event_stream(self, action: str, timeout_ms: int = 30000) -> dict:
+        """Drive Record & Replay via the app-server-hosted event_stream mcp.
+
+        Recording only works when the event-stream mcp server is hosted by the
+        SAME codex app-server that holds the CUAService event-observer
+        connection. A standalone `SkyComputerUseClient event-stream mcp` client
+        connects but never receives an XPC reply (the service has nowhere to
+        stream events), so we always route through this app-server session.
+        """
+        self.ensure()
+        tool = f"event_stream_{action}"
+        id_ = self._next_id()
+        r = self._req(id_, "mcpServer/tool/call", {
+            "server": "event_stream",
+            "threadId": self._thread_id,
+            "tool": tool,
+            "arguments": {},
+        }, timeout=timeout_ms / 1000 + 5)
+        if r is None:
+            return {"content": [{"type": "text", "text": "timeout"}], "isError": True}
+        return r.get("result", {"content": [{"type": "text", "text": "no result"}], "isError": True})
+
 
 _session = AppServerSession()
 
@@ -465,6 +487,31 @@ class RouterHandler(BaseHTTPRequestHandler):
 
         if self.path.split("?", 1)[0] == "/ready":
             self._handle_ready(deep=bool(req_body.get("deep", True)))
+            return
+
+        if self.path.split("?", 1)[0] == "/record":
+            # Record & Replay control endpoint. body: {"action": "start|status|stop"}
+            action = str(req_body.get("action", "status")).strip()
+            if action not in ("start", "status", "stop"):
+                resp_bytes = json.dumps({
+                    "isError": True,
+                    "content": [{"type": "text", "text": f"unknown action: {action}"}],
+                }).encode()
+            else:
+                try:
+                    result = _session.call_event_stream(action)
+                    resp_bytes = json.dumps(result, ensure_ascii=False).encode()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[record] error: {e}", flush=True)
+                    resp_bytes = json.dumps({
+                        "isError": True,
+                        "content": [{"type": "text", "text": str(e)}],
+                    }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_bytes)))
+            self.end_headers()
+            self.wfile.write(resp_bytes)
             return
 
         if self.path == "/exec":

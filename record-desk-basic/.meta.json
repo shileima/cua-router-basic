@@ -1,0 +1,7 @@
+{
+  "name": "record-desk-basic",
+  "description": "macOS 桌面录制→回放→转技能。内置 Record & Replay（event-stream MCP），复用 cua-router-basic 的 SkyComputerUseClient",
+  "version": "0.1.0",
+  "source": "user",
+  "requires": ["cua-router-basic"]
+}

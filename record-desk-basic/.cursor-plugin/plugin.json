@@ -1,0 +1,21 @@
+{
+  "name": "record-desk-basic",
+  "displayName": "Record Desk Basic",
+  "description": "macOS 桌面录制→回放→转技能：内置 Record & Replay，复用 cua-router-basic 的 Computer Use 运行时",
+  "version": "0.1.0",
+  "author": {
+    "name": "shileima"
+  },
+  "homepage": "https://github.com/shileima/cua-router-basic",
+  "repository": "https://github.com/shileima/cua-router-basic",
+  "license": "MIT",
+  "keywords": [
+    "record-and-replay",
+    "computer-use",
+    "cua-router",
+    "recording",
+    "replay",
+    "macos"
+  ],
+  "skills": "."
+}

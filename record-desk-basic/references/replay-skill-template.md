@@ -41,8 +41,8 @@ description: >
 
 1. 打开/激活目标应用并导航到起始页（如地址栏输入 URL）——这也是录制的一部分，必须写出来。
 2. 用地址栏/应用状态定位目标窗口：`ax.get("<bundleId>")` → `ax.findIdx(...)`。
-3. 交互用 `sky.click / sky.set_value / sky.press_key`（URL/中文优先 `set_value`）。
-4. 关键步骤后 `ax.get(app)` 校验结果，避免坐标盲点。
+3. 交互用 `sky.click / sky.set_value / sky.press_key`；URL/中文先判断控件能力，原生输入框用 `set_value`，不支持 AX 写值的输入区用 shell 级系统粘贴。
+4. 关键步骤后 `ax.get(app)` 校验结果；shell / AppleScript / swift 等外部系统动作后必须 `ax.get(app, { refresh: true })`，避免复用旧 `element_index`。
    - AX 缺失时按 AX → hover → OCR → 坐标扫描 降级（见 cua-router-basic `references/ax-locating.md`）。
 5. 最后一步做结果校验（如出现「已保存」或目标节点文本），与录制的收尾动作对应。
 ```
@@ -52,10 +52,38 @@ description: >
 | 录制事件 | 回放写法 |
 |---|---|
 | 点击某按钮（有 AX target） | `ax.findIdx(s.text, "<按钮文案>")` → `sky.click({ app, x, y })` |
-| 在输入框输入文本/URL | `sky.set_value(idx, "<值或参数>")` +（URL 时）`press_key("Return")` |
+| 在原生输入框/地址栏输入文本或 URL | `sky.set_value({ app, element_index: idx, value })` +（地址栏导航时）`press_key("Return")` |
+| 在不支持 AX 写值的输入区输入文本 | 聚焦输入区 → shell `pbcopy` 写剪贴板 → shell `osascript` 系统级 `Command+A` / `Command+V` → `ax.get(app, { refresh: true })` 校验 |
+| 发送消息 | 粘贴后重新取树定位「发送」按钮 → `sky.click({ app, element_index: sendIdx })`；不要用 `Return` 代替 |
 | hover 后才出现的菜单 | 先 swift 移动鼠标触发 hover，再点热区（cua-router-basic `references/hover-menu.md`） |
 | Canvas / React Flow 双击 | `Escape` → 等 600ms → 对节点内文本 `click_count: 2`（`references/canvas-double-click.md`） |
 | 纯视觉校验/无稳定 AX target | 保留坐标兜底，但必须配 OCR/AX 二次确认 |
+
+## 不支持 AX 写值时的系统级粘贴模板
+
+录制事件如果表现为用户真实键盘输入，但目标控件无法通过 `set_value` 写入，生成技能时使用下面的结构：
+
+```bash
+# 1) 先在 exec.sh 中用 sky.click 聚焦输入区。
+
+# 2) shell 层设置剪贴板并触发系统级粘贴。
+TEXT="$(cat <<'EOF'
+<来自输入参数的文本>
+EOF
+)"
+printf '%s' "$TEXT" | pbcopy
+osascript -e 'tell application "System Events" to keystroke "a" using command down'
+osascript -e 'tell application "System Events" to keystroke "v" using command down'
+```
+
+```js
+// 3) 重新取树验证，之后再定位发送/保存按钮。
+const s = await ax.get(app, { refresh: true });
+const sendIdx = ax.findIdx(s.text, "发送");
+if (sendIdx == null) throw new Error("未找到发送按钮");
+await sky.click({ app, element_index: sendIdx });
+const afterSend = await ax.get(app, { refresh: true });
+```
 
 ## 校验
 

@@ -87,7 +87,8 @@ bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" fix      # 手动修复
 | 输出到 `nodeRepl.write` | 用 `ax.summarize(s, { keywords, patterns, maxLines })` 或先 `filter + slice` | 回传完整 `s.text` 造成 payload 爆炸 |
 | AX 缺失降级 | AX → hover → OCR → 坐标扫描 | AX 找不到就放弃或只点单个硬编码坐标 |
 | hover 菜单 | 先系统鼠标移动触发 hover，再点菜单热区，最后 `ax.get(app, {refresh:true})` 验证 | 直接点卡片主体或菜单项全程用坐标 |
-| 中文/URL 输入 | 优先 `set_value` | 盲目 `type_text` |
+| 中文/URL 输入 | 原生输入框优先 `set_value`；不支持 AX 写值的输入区用 shell 级 `pbcopy` + `osascript` 系统粘贴，之后 `ax.get(app, { refresh: true })` | 盲目 `type_text` 或在 AX 写值无效后继续重试 |
+| 消息发送 | 粘贴后重新取树定位并点击「发送」按钮 | 用 `Return` 代替发送按钮 |
 | Canvas 双击 | `Escape` → 等 600ms → 对节点内文本/图片 `click_count: 2` | `clickCount`、双击 container、坐标双击 |
 | 弹层/对话框 | 操作后 `ax.get(app)` → `ax.findFocusedIdx` → 全文搜索 | 只扫低 idx |
 

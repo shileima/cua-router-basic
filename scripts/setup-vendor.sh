@@ -30,6 +30,7 @@ cp -R "$CHATGPT_RESOURCES/cua_node" "$VENDOR/cua_node"
 info "[setup-vendor] copying Codex Computer Use.app..."
 rm -rf "$VENDOR/computer-use/Codex Computer Use.app"
 cp -R "$COMPUTER_USE_SRC" "$VENDOR/computer-use/Codex Computer Use.app"
+bash "$SKILL_ROOT/scripts/patch-computer-use-branding.sh" "$VENDOR/computer-use/Codex Computer Use.app"
 
 SKY_CLIENT="$VENDOR/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
 [ -x "$SKY_CLIENT" ] || die "SkyComputerUseClient 不可执行：$SKY_CLIENT"

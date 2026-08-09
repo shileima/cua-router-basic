@@ -60,6 +60,7 @@ tar -czf "$slim_path" \
   -C "$SKILL_ROOT" \
   SKILL.md \
   .meta.json \
+  assets \
   scripts \
   record-desk-basic \
   vendor/README.md \

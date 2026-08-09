@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -55,7 +56,8 @@ class RouterIdentityTests(unittest.TestCase):
         self.assertEqual(Path(identity["runtime_dir"]), vendor_paths.RUNTIME)
         self.assertEqual(Path(identity["computer_use_app"]), vendor_paths.computer_use_app())
         self.assertEqual(Path(identity["codex_bin"]), vendor_paths.codex_bin())
-        self.assertEqual(identity["version"], "0.4.11")
+        meta = json.loads((ROOT / ".meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(identity["version"], meta["version"])
         self.assertIsInstance(identity["pid"], int)
 
 

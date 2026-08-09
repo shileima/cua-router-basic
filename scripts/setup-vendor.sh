@@ -11,6 +11,18 @@ COMPUTER_USE_SRC="$CODEX_HOME/computer-use/Codex Computer Use.app"
 die() { echo "error: $*" >&2; exit 1; }
 info() { echo "$*"; }
 
+verify_computer_use_signature() {
+  local app="$1"
+
+  codesign --verify --deep --strict "$app" \
+    || die "Computer Use app 签名校验失败：$app"
+
+  if command -v spctl >/dev/null 2>&1; then
+    spctl --assess --type execute "$app" \
+      || die "Computer Use app 未通过 Gatekeeper 校验：$app"
+  fi
+}
+
 [ -x "$CHATGPT_RESOURCES/codex" ] || die "未找到 ChatGPT codex：$CHATGPT_RESOURCES/codex"
 [ -d "$CHATGPT_RESOURCES/cua_node" ] || die "未找到 cua_node：$CHATGPT_RESOURCES/cua_node"
 [ -d "$COMPUTER_USE_SRC" ] || die "未找到 Computer Use 客户端：$COMPUTER_USE_SRC（需先在 ChatGPT/Codex 中安装 Computer Use 插件一次）"
@@ -30,10 +42,10 @@ cp -R "$CHATGPT_RESOURCES/cua_node" "$VENDOR/cua_node"
 info "[setup-vendor] copying Codex Computer Use.app..."
 rm -rf "$VENDOR/computer-use/Codex Computer Use.app"
 cp -R "$COMPUTER_USE_SRC" "$VENDOR/computer-use/Codex Computer Use.app"
-bash "$SKILL_ROOT/scripts/patch-computer-use-branding.sh" "$VENDOR/computer-use/Codex Computer Use.app"
 
 SKY_CLIENT="$VENDOR/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
 [ -x "$SKY_CLIENT" ] || die "SkyComputerUseClient 不可执行：$SKY_CLIENT"
+verify_computer_use_signature "$VENDOR/computer-use/Codex Computer Use.app"
 
 SKY_SHA="$(shasum -a 256 "$SKY_CLIENT" | awk '{print $1}')"
 CODEX_VERSION="$("$VENDOR/codex/bin/codex" --version 2>/dev/null || echo unknown)"

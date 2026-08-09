@@ -2,7 +2,7 @@
   "name": "cua-router-basic",
   "displayName": "CUA Router Basic",
   "description": "sky Computer Use API 基础技能：cua-router 本地服务、浏览器自动化操作规范与辅助函数",
-  "version": "0.4.14",
+  "version": "0.4.15",
   "author": {
     "name": "shileima"
   },

@@ -47,6 +47,22 @@ class VendorPathTests(unittest.TestCase):
         self.assertEqual(vendor_paths.event_stream_home(), vendor_paths.RUNTIME)
 
 
+class VendorSetupScriptTests(unittest.TestCase):
+    def test_setup_vendor_preserves_notarized_computer_use_app(self):
+        script = (SCRIPTS_DIR / "setup-vendor.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn("patch-computer-use-branding.sh", script)
+        self.assertIn("codesign --verify --deep --strict", script)
+        self.assertIn("spctl --assess --type execute", script)
+
+    def test_branding_patch_script_does_not_resign_app(self):
+        script = (SCRIPTS_DIR / "patch-computer-use-branding.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn("PlistBuddy", script)
+        self.assertNotIn("codesign --force --sign -", script)
+        self.assertIn("preserve notarized signature", script)
+
+
 class RouterIdentityTests(unittest.TestCase):
     def test_router_identity_reports_current_install(self):
         identity = cua_router.router_identity()

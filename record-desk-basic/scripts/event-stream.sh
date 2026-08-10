@@ -18,15 +18,17 @@ BASE="http://localhost:${PORT}"
 
 usage() {
   cat <<EOF
-Usage: $0 <start|status|stop>
+Usage: $0 <start|status|stop|mcp>
 
   start    开始录制（最长 30 分钟）。经 cua-router app-server 驱动，无需系统弹窗。
   status   查询当前/最近一次录制状态，返回 metadataPath 与 eventsPath。
   stop     停止录制并返回产物路径（events.jsonl / session.json）。
+  mcp      以 stdio MCP server 暴露 event_stream_start/status/stop。
 
 环境变量：
   CUA_ROUTER_INSTALL_DIR   显式指定 cua-router-basic 根目录
   CUA_ROUTER_PORT          cua-router 监听端口（默认 18901）
+  RECORD_DESK_CODEX_HOME   mcp 模式使用的 CODEX_HOME（默认 cua-router-basic/runtime）
 EOF
 }
 
@@ -38,7 +40,7 @@ case "$action" in
     usage
     exit 0
     ;;
-  start|status|stop) ;;
+  start|status|stop|mcp) ;;
   *)
     echo "Unknown action: $action" >&2
     usage >&2
@@ -47,6 +49,30 @@ case "$action" in
 esac
 
 CUA_ROOT="$(resolve_cua_root "$SKILL_ROOT")"
+
+if [ "$action" = "mcp" ]; then
+  CLIENT="$(sky_client_bin "$CUA_ROOT")"
+  SERVICE_APP="$CUA_ROOT/vendor/computer-use/Codex Computer Use.app"
+  CODEX_HOME_DIR="${RECORD_DESK_CODEX_HOME:-$CUA_ROOT/runtime}"
+  COMPUTER_USE_LINK="$CODEX_HOME_DIR/computer-use"
+  COMPUTER_USE_TARGET="$CUA_ROOT/vendor/computer-use"
+
+  mkdir -p "$CODEX_HOME_DIR"
+  if [ -L "$COMPUTER_USE_LINK" ]; then
+    if [ "$(readlink "$COMPUTER_USE_LINK")" != "$COMPUTER_USE_TARGET" ]; then
+      rm "$COMPUTER_USE_LINK"
+      ln -s "$COMPUTER_USE_TARGET" "$COMPUTER_USE_LINK"
+    fi
+  elif [ ! -e "$COMPUTER_USE_LINK" ]; then
+    ln -s "$COMPUTER_USE_TARGET" "$COMPUTER_USE_LINK"
+  elif [ ! -d "$COMPUTER_USE_LINK/Codex Computer Use.app" ]; then
+    rdb_die "CODEX_HOME 下已有不可用的 computer-use：$COMPUTER_USE_LINK"
+  fi
+
+  export CODEX_HOME="$CODEX_HOME_DIR"
+  export SKY_CUA_SERVICE_PATH="$SERVICE_APP"
+  exec "$CLIENT" event-stream mcp
+fi
 
 router_health_json() {
   curl -sf "$BASE/health" 2>/dev/null

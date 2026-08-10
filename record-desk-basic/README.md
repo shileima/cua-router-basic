@@ -4,7 +4,7 @@ macOS 桌面「录制 → 回放 → 转技能」独立技能。把 ChatGPT app 
 
 ## 它做什么
 
-- `event_stream_start / status / stop`：录制用户在 Mac 上的一次演示（鼠标、键盘、窗口 AX 内容，最长 30 分钟）。
+- `event_stream_start / status / stop`：录制用户在 Mac 上的一次演示（鼠标、键盘、窗口 AX 内容，最长 30 分钟）。优先以宿主托管 MCP 工具方式运行，对齐 Codex 官方 Record & Replay；不可用时可走 shell fallback。
 - 录制产物 `events.jsonl` / `session.json` 落盘（默认隔离在 `runtime/`）。
 - 读盘解读后，按 `cua-router-basic` 规范生成「用 Computer Use 高效回放」的可复用技能。
 
@@ -23,7 +23,7 @@ macOS 桌面「录制 → 回放 → 转技能」独立技能。把 ChatGPT app 
 # 0) 依赖校验（定位 cua-router-basic + 拉起 cua-router 守护进程）
 bash scripts/setup.sh
 
-# 1) 开始录制（秒回，返回 eventsPath；屏幕出现录制指示器）
+# 1) fallback：开始录制（秒回，返回 eventsPath；屏幕出现录制指示器）
 bash scripts/event-stream.sh start
 #    —— 结束本轮，等用户把演示做完 ——
 
@@ -32,7 +32,7 @@ bash scripts/event-stream.sh status
 bash scripts/event-stream.sh stop     # 返回 metadataPath / eventsPath
 ```
 
-> 录制经 cua-router-basic 的 codex app-server 托管驱动（`event-stream.sh` 只是调用 cua-router 的 `/record` 端点的瘦客户端）。裸 spawn `event-stream mcp` 会挂起——详见 SKILL.md「架构」一节。
+> 优先使用插件宿主托管的 `record-desk-event-stream` MCP server；`event-stream.sh mcp` 负责以 stdio MCP server 形态暴露官方 `event_stream_*` 工具。`event-stream.sh start/status/stop` 是 fallback，会经 cua-router-basic 的 codex app-server 托管驱动 `/record`。
 
 ## 目录
 
@@ -40,7 +40,7 @@ bash scripts/event-stream.sh stop     # 返回 metadataPath / eventsPath
 record-desk-basic/
 ├── SKILL.md                     # 技能入口：录制工作流 + 转技能规范 + 触发词
 ├── README.md
-├── .meta.json / .codex-plugin / .cursor-plugin / .claude-plugin
+├── .meta.json / .mcp.json / .codex-plugin / .cursor-plugin / .claude-plugin
 ├── references/
 │   ├── recording-architecture.md # 根因沉淀：录制为何必须由 codex app-server 托管（含证据/解法）
 │   ├── event-stream.md          # 录制产物解读（events.jsonl / AX diff 语法 / 敏感信息）
@@ -55,6 +55,6 @@ record-desk-basic/
 
 本技能与 `cua-router-basic` 一样**完全自包含**：runtime app 与 client 二进制都取自 cua-router-basic 的 vendor，**不依赖本地 ChatGPT app 或 `~/.codex`**。
 
-- 录制由 **cua-router-basic 的 codex app-server** 托管驱动。裸 spawn `SkyComputerUseClient event-stream mcp` 会连上服务但收不到 XPC 回复而挂起——录制事件需要 app-server 的事件观察者连接来承接。
+- 首选录制由宿主托管的 `record-desk-event-stream` MCP 驱动，对齐 Codex 官方 Record & Replay。fallback 由 **cua-router-basic 的 codex app-server** 托管驱动。普通 shell 裸 spawn `SkyComputerUseClient event-stream mcp` 会连上服务但收不到 XPC 回复而挂起——录制事件需要 app-server 的事件观察者连接来承接。
 - 首次需给 vendor app（`vendor/computer-use/Codex Computer Use.app`）授予 macOS **屏幕录制** 与 **辅助功能** 权限；授权一次后长期有效。`start` 后屏幕出现**录制指示器**，无阻塞确认框。
 - 空闲时 `status` 可能回 `-10005 Record & Replay is not enabled for this user`（账号 feature-flag 探测），不影响本地 `start` 真正录制。

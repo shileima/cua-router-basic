@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "record-desk-event-stream": {
+      "command": "bash",
+      "args": ["./scripts/event-stream.sh", "mcp"],
+      "cwd": "."
+    }
+  }
+}

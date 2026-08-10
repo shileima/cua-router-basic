@@ -106,7 +106,10 @@ SKY_CUA_SERVICE_PATH = "<vendor>/Codex Computer Use.app"
 
 - **空闲时 `status` 可能返回 `-10005 Record & Replay is not enabled for this user`**：这是服务端对账号 feature-flag 的探测，出现在“从未有过会话”的空闲态；不影响本地 `start` 真正开始录制。以 `start` 返回的 `isRecording: true` 与产物落盘为准。
 - **守护进程会被自动化沙盒回收**：在受限 Shell 里用 `daemon.sh start` 起的 cua-router，可能在该次工具调用结束时被连同进程组杀掉。开发自测时改用**常驻后台作业**方式运行 `python3 scripts/cua-router.py --port <port>`，再从别处 `curl`。生产环境由 Automan/Cursor 侧长期托管，不受影响。
+- **宿主托管 MCP 与 fallback 在录制路径上是等价的**：无论走 Codex 官方 `record-and-replay` 插件还是 `record-desk-basic` 的 `/record` fallback，都由 codex app-server 托管 `event-stream mcp`，事件观察者连接同样建立、AX 捕获能力也一样（曾以为 fallback 在某些非标准 AX 应用只能看窗口壳、宿主 MCP 能拿更完整 AX diff，这个判断已被下一条推翻——真正的分水岭是起录时前台是不是目标 App）。
+- **不要让 MCP 配置指向不存在的入口**：如果宿主配置为 `event-stream.sh mcp`，脚本必须支持 `mcp` 模式并 `exec SkyComputerUseClient event-stream mcp`；否则 live discovery 会失败，Agent 只能退回 shell fallback，录制能力会弱于 Codex 官方路径。
+- **起录时前台 App 决定后续 AX 捕获质量（最关键）**：SkyComputerUseService 在 `start` 那一刻会对当前前台 App 做一次完整 AX 树 walk 作为基线。若起录时前台是 A（Agent 宿主：AutoMan/Cursor 对话窗）而目标是 B（任意业务 App），后续切到 B 触发的 `window.changed` 会退化为 BARE 事件（无 `app`/`ax` 字段），此后所有对 B 的点击都会被锁到 `AXGroup <B名>` 窗口壳层，无法拿到语义 target。这个现象**曾被误诊为「某类应用的 AX 只暴露 shell」或「fallback 路径弱于宿主 MCP」**，均已被证伪。对照实测：起录前先激活目标 App → 后续 tab 切换、按钮点击全部命中 `AXStaticText` / `AXButton` 等语义 target，AX diff 覆盖每次界面变化；在 Agent 宿主前台起录 → 目标 App 只剩 shell tree、点击目标锁在 `AXGroup <app名>`。因此 SKILL.md 强制要求：**起录前必须先把目标 App 切到前台并校验**（Path A：用户报了 App 名 → osascript activate；Path B：用户没报名 → 让用户手动切前台后再 start）。此外，起录前对目标 bundle 做一次 `ax.get(bundle, { refresh: true })` 预热，可以进一步兜住"UI 未完全 render"的 race。
 
 ## 七、一句话结论
 
-> 录制的本质是 **codex app-server 驱动的事件串流**，不是一个可以独立 spawn 的 MCP。把 event-stream 注册进 cua-router 的 app-server、经 `/record` 驱动，才是正确且被验证可用的架构。
+> 录制的本质是 **codex app-server 驱动的事件串流**，不是一个可以独立 shell spawn 的 MCP。对齐 Codex 的首选路径是让宿主直接托管 `event-stream mcp`；fallback 才把 event-stream 注册进 cua-router 的 app-server、经 `/record` 驱动。

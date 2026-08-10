@@ -35,7 +35,7 @@ description: >
 
 调用前必须先用 MCP discovery 检查该 server 是否可用；如果可用，直接调用这些工具。这条路径最接近 Codex app 的官方录制能力，能让录制事件从宿主 app-server 的观察者连接流出。
 
-如果宿主 MCP 不可用，再使用本技能的 shell fallback：本技能把 event-stream 注册成 **cua-router-basic 的 codex app-server** 的一个 mcp server（`[mcp_servers.event_stream]`），并由 `cua-router` 暴露 `/record` 端点驱动。该路径能稳定 start/status/stop，但在部分非标准 AX 应用里，捕获到的窗口内部语义可能弱于 Codex 官方宿主路径。
+如果宿主 MCP 不可用，再使用本技能的 shell fallback：本技能把 event-stream 注册成 **cua-router-basic 的 codex app-server** 的一个 mcp server（`[mcp_servers.event_stream]`），并由 `cua-router` 暴露 `/record` 端点驱动。该路径与 Codex 官方一样由 app-server 托管 event-stream，AX 捕获能力等价。
 
 `scripts/event-stream.sh` 有两种入口：
 
@@ -51,89 +51,17 @@ description: >
 - 首次需给 cua-router-basic 的 vendor app（`vendor/computer-use/Codex Computer Use.app`）授予 **屏幕录制** 与 **辅助功能（Accessibility）**。授权一次后长期有效。
 - `start` 后屏幕上会出现**录制指示器**（无阻塞确认框）。本技能只用 cua-router-basic 的 vendor，不依赖本地 ChatGPT app / `~/.codex`。
 
-## 录制前置：起录时前台必须是目标 App（强制，每次录制都要做）
+## 录制工作流（对齐 Codex record-and-replay 官方语义）
 
-**这是最容易漏、但决定成败的一步**。SkyComputerUseService 在 `start` 那一刻会对当前前台 App 做一次完整 AX 树 walk 作为基线；如果起录时前台是 Agent 宿主（AutoMan 对话窗、Cursor 自己），之后切到目标 App 触发的 `window.changed` 会退化成 BARE（无 `app` / `ax` 字段），后续所有点击都被锁定成 `AXGroup <app名>` 的窗口壳层——**用户点多少次内部按钮都拿不到语义 target，事后无法生成可回放技能**。
+**不要**要求用户先把目标 App 切到前台、也不要让用户回复「好了」才起录——这与 Codex 官方 `record-and-replay` 不一致。正确做法是：**用户说开始录制 → 立即 `event_stream_start` → 结束本轮让用户去操作**。
 
-对照实测证据：
-
-- ❌ 在 Agent 宿主前台起录 → 目标 App 的 AX 退化到 shell tree（几百字符、无内部子节点），每次点击都是 `AXGroup <app名>`
-- ✅ 起录前先激活目标 App 并校验前台，再 `start` → 后续 tab 切换、按钮点击全部命中 `AXStaticText` / `AXButton` 等语义 target，AX diff 覆盖每次界面变化
-
-**每次录制启动前必须按顺序执行：**
-
-### Path A：用户已在消息里指明目标 App（首选）
-
-例如"录制 Chrome 里的操作"、"录制我在 XXX App 里的操作"。
-
-1. **激活目标 App 到前台**（三选一，按优先级）：
-   - `osascript -e 'tell application "<AppName>" to activate'`（首选）
-   - 通过 cua-router-basic 的 Computer Use（`sky.focus_app` / `sky.activate_app`）
-   - 让用户手动 `Cmd+Tab` 或点 Dock 图标，回复"已切换"
-2. `sleep 1` 让 focus 稳定。
-3. **校验前台**（必做）：
-   ```bash
-   osascript -e 'tell application "System Events" to name of first process whose frontmost is true'
-   ```
-   若返回不是目标 App，回到步骤 1 重试。
-4. **强制 AX 预热**（推荐，兜住 UI 未完全 render）：`ax.get(<frontmost bundle>, { refresh: true })`，确保目标 App 的 AX tree 已经完整建立（能看到内部业务节点，而不是只有 window 壳）。若返回仍是壳层，再 `sleep 1` 重试一次；仍不行就告诉用户"目标 App 界面似乎还没加载完，请等它显示出主界面后回复'好了'"。
-5. 校验通过后才 `event_stream_start`。
-
-### Path B：用户没明说目标 App（自动判断）
-
-例如只说"开始录制"、"录制我的操作"。
-
-1. **询问用户切换**：告诉用户「请把你要录的目标窗口切到前台（点 Dock 图标 / Cmd+Tab / 直接点击窗口都行），准备好回复'好了'」。
-2. 用户回"好了"后，读前台：
-   ```bash
-   osascript -e 'tell application "System Events" to name of first process whose frontmost is true'
-   ```
-3. **拒绝录 Agent 宿主自己**：若前台是 AutoMan / Cursor / 类 IDE 电脑对话工具（识别标志：进程名含 automan / cursor / vscode / electron 且 URL 含 `fsd-electron` 之类，或用户明确表明是"对话窗"），退回步骤 1。
-4. 前台是普通 App → 记住这个 bundle 作为"预期目标"，`sleep 1`。
-5. **强制 AX 预热**：同 Path A 步骤 4。
-6. 预热通过 → `event_stream_start`。
-
-### 通用后续步骤（Path A / B 共用）
-
-7. `start` 秒回后**结束本轮**，让用户去操作。不要用 Computer Use 替用户点击，不要 poll `status`。
-8. 用户回来说"录完了" → 调 `event_stream_stop`。用户没主动说完，不要主动 stop。
-
-**反例（禁止）**：用户在 Agent 对话里说"开始录制并操作 X"，agent 不做前台激活/校验就直接 `event_stream_start`。→ 100% 拿不到目标 App 内部 AX。
-
-## 录制工作流
+SkyComputerUseService 在录制期间会监听 App 激活/切换（Dock 点击、Cmd+Tab、直接点窗口），并为新激活的窗口自动发出 `window.changed`，附带完整或 diff 形式的 AX tree。也就是说，**AX 同步发生在用户激活 App 时，由录制服务自动完成，不需要 Agent 在起录前手动 `activate` 或 `ax.get` 预热**。
 
 优先入口：宿主 MCP 工具 `event_stream_start` / `event_stream_status` / `event_stream_stop`。若 MCP discovery 显示 `user-record-desk-event-stream` 不可用，则使用 shell fallback：`scripts/event-stream.sh <start|status|stop>`（内部经 cua-router `/record` 驱动）。
 
-**完整推荐脚本模板**（覆盖前置激活 + 校验 + 起录）：
-
 ```bash
 SKILL_ROOT="$(cd "$(dirname "$0")" && pwd)"   # 或本技能安装目录
-TARGET_APP_NAME="$1"        # Path A：调用方传入目标 App 名称
-# Path B：不传参数时，假定用户已把目标切到前台，直接读取当前 frontmost 作为目标
-
-# 0) 激活/确认目标 App 在前台
-if [ -n "$TARGET_APP_NAME" ]; then
-  osascript -e "tell application \"$TARGET_APP_NAME\" to activate"
-  sleep 1
-fi
-FRONT=$(osascript -e 'tell application "System Events" to name of first process whose frontmost is true')
-
-# 0.1) 校验：Path A 校验前台=目标名；Path B 拒绝录 Agent 宿主
-if [ -n "$TARGET_APP_NAME" ] && [ "$FRONT" != "$TARGET_APP_NAME" ]; then
-  echo "前台是 $FRONT，不是目标 App $TARGET_APP_NAME，中止起录"
-  exit 1
-fi
-case "$FRONT" in
-  Electron|automan-desktop-dev|Cursor|Code|Terminal|iTerm2)
-    echo "前台是 Agent 宿主 $FRONT，请先切到要录的目标窗口再重试"
-    exit 1 ;;
-esac
-
-# 0.2) 强制 AX 预热（可选但推荐）
-# 由调用方在起录前用 `ax.get(<frontmost bundle>, { refresh: true })` 触发一次完整 AX walk，
-# 若返回仍是壳层就 sleep 1 后再取一次；仍不行提示用户等界面加载完再重试。
-
-# 1) 起录（秒回；屏幕出现录制指示器）
+# 1) 开始录制（秒回，返回 eventsPath / sessionDirectoryPath；屏幕出现录制指示器）
 bash "$SKILL_ROOT/scripts/event-stream.sh" start
 # —— 到此结束本轮，等用户把要录的演示做完 ——
 
@@ -142,16 +70,17 @@ bash "$SKILL_ROOT/scripts/event-stream.sh" status
 bash "$SKILL_ROOT/scripts/event-stream.sh" stop
 ```
 
-规则（对齐 Record & Replay 官方 SKILL 语义）：
+规则（与 Codex 官方 `record-and-replay` SKILL 一致）：
 
-- 录制前**必须先按上一节「录制前置」把目标 App 拉到前台并校验**（Path A 或 Path B），否则事件流拿不到内部 AX，等于白录。
-- 录制是要捕获**用户的演示**：`start` 秒回后**不要**轮询等待，也不要用 Computer Use 去替用户操作；结束本轮、提示时限（最长 30 分钟），让用户录完再回来。
+- 仅在用户准备好开始录制时调用 `event_stream_start`。**起录前不要求**目标 App 在前台，**不要**让用户先切窗口再回复「好了」。
+- `start` 秒回后**不要** sleep、poll 或循环等待；**不要**用 Computer Use 替用户操作。结束本轮，提示最长 30 分钟，让用户去演示，录完回来告知。
+- 用户演示时正常切换 App 即可（Dock / Cmd+Tab / 点窗口）；录制服务会在激活时自动捕获 `window.changed` 和 AX tree。
 - **同一时刻只允许一个录制**。若 `start` 报告已有活跃录制，不要重启，询问用户是用当前录制还是等它结束。
 - 只有用户主动询问状态或录完回来时才 `status`；不要用它来 poll。
 - 用户说录完 → `stop`，然后读取返回里的 `metadataPath` / `eventsPath`（即 `events.jsonl` / `session.json`）并**用普通文件工具读盘**、检查事件后再回应。
 - 用户说取消了 → 不要再 `stop`，可读 `session.json` 确认 `endReason` 为 `recording_controls_cancelled`，致谢并不生成技能。
 - 事件内容不经端点返回，只在磁盘上（`sessionDirectoryPath` 下）。
-- **stop 后立刻校验产物质量（强制）**：读 `events.jsonl`，对每个非宿主 App 的 bundle 分别检查：如果它出现的 `window.changed` 是 BARE（缺 `app` / `ax` 字段）、或该 App 下所有 `mouse.click` 的 target 都是 `role=AXGroup` 的窗口壳层（没有 `AXStaticText` / `AXButton` / `AXTextField` 等细粒度 role），说明前置激活没生效，需要告诉用户"这次录制没能捕获到内部动作，请把目标窗口切到前台并等界面完整加载后重录"，不要基于坏产物生成技能。
+- **stop 后校验产物质量**：读 `events.jsonl`，若目标 App 的 `window.changed` 是 BARE（缺 `app`/`ax` 字段）、或该 App 下所有 `mouse.click` 的 target 都是 `role=AXGroup` 窗口壳层，说明这次激活时 AX 未完整同步。告知用户重录，并建议：**确保目标 App 已打开且主界面可见后再做第一次点击，每步操作后稍停半秒**。不要基于坏产物生成技能。
 
 > 已知量：空闲（无活跃会话）时 `status` 可能返回 `-10005 Record & Replay is not enabled for this user`——这是服务端对账号 feature-flag 的探测，不影响本地 `start` 真正开始录制。以 `start` 返回的 `isRecording: true` 与产物落盘为准。
 

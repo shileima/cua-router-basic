@@ -56,7 +56,12 @@ slim_name="$(slim_archive_name "$VERSION")"
 slim_path="$OUT_DIR/$slim_name"
 
 info "packaging slim -> $slim_path"
+# Exclude the intranet publish tooling (scripts/intranet/): it is git-ignored,
+# touches the internal credential proxy, and must not ship in the public slim
+# package. tar does not honor .gitignore, so exclude it explicitly here.
 tar -czf "$slim_path" \
+  --exclude='scripts/intranet' \
+  --exclude='scripts/intranet/*' \
   -C "$SKILL_ROOT" \
   SKILL.md \
   .meta.json \

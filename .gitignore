@@ -11,6 +11,11 @@ dist/
 *.tar.gz
 *.tar.gz.sha256
 
+# Intranet (Sankuai S3plus) publish tooling — touches the internal credential
+# proxy, must not be committed. Install side (scripts/install-intranet.sh) is
+# public download-only and stays tracked.
+scripts/intranet/
+
 # macOS / editor
 .DS_Store
 *.swp

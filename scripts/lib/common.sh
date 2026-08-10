@@ -146,6 +146,63 @@ default_git_url() {
   printf 'https://github.com/%s.git' "$(github_repo)"
 }
 
+# ---------------------------------------------------------------------------
+# Intranet (Sankuai S3plus) distribution helpers
+#
+# Public read URL layout (forcePathStyle):
+#   https://s3plus.sankuai.com/<bucket>/cua-resources/
+#     ├── install-intranet.sh                    # stable bootstrap entry
+#     ├── lib/common.sh                           # stable shared helpers
+#     ├── .meta.json                              # latest version pointer
+#     └── versions/<version>/
+#         ├── cua-router-basic-slim-<version>.tar.gz(.sha256)
+#         ├── cua-router-basic-vendor-darwin-arm64-<version>.tar.gz(.sha256)
+#         ├── SHA256SUMS
+#         ├── release-manifest.json
+#         ├── install-intranet.sh
+#         └── lib/common.sh
+#
+# The upload/publish side lives in scripts/intranet/ (git-ignored, touches the
+# intranet credential proxy). The download/install side (install-intranet.sh)
+# only needs these public read URLs and is safe to commit.
+# ---------------------------------------------------------------------------
+
+# Base public URL for cua-router-basic intranet resources (no trailing slash).
+intranet_base() {
+  local base="${CUA_ROUTER_INTRANET_BASE:-https://s3plus.sankuai.com/aiagent-bucket/cua-resources}"
+  printf '%s' "${base%/}"
+}
+
+# Per-version directory URL under the intranet base.
+intranet_version_base() {
+  local version="$1"
+  printf '%s/versions/%s' "$(intranet_base)" "$version"
+}
+
+# URL of the shared common.sh used to bootstrap a curl | bash intranet install.
+intranet_common_url() {
+  printf '%s/lib/common.sh' "$(intranet_base)"
+}
+
+# Slim / vendor tarball URLs served from a version directory on the intranet.
+intranet_slim_url() {
+  local version="$1"
+  printf '%s/%s' "$(intranet_version_base "$version")" "$(slim_archive_name "$version")"
+}
+
+intranet_vendor_url() {
+  local version="$1"
+  local platform="$2"
+  printf '%s/%s' "$(intranet_version_base "$version")" "$(vendor_archive_name "$version" "$platform")"
+}
+
+# Resolve the latest published version from the intranet .meta.json pointer.
+fetch_intranet_version() {
+  local meta_url
+  meta_url="$(intranet_base)/.meta.json"
+  curl -fsSL "$meta_url" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])'
+}
+
 automan_root_dir() {
   printf '%s' "${CUA_ROUTER_AUTOMAN_ROOT:-$HOME/.automan}"
 }

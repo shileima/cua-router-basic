@@ -85,6 +85,23 @@ bash scripts/install-full.sh --target ~/.automan/claude-code-agents/cua-agent/sk
 bash scripts/install-remote.sh --target ~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic
 ```
 
+### 方式 F：内网 S3 一键安装（无需 GitHub 访问）
+
+适合内网 / 无外网环境。资源从公司内网对象存储 S3plus 下载，与 GitHub 发布互不影响：
+
+```bash
+curl -fsSL https://s3plus.sankuai.com/aiagent-bucket/cua-resources/install-intranet.sh | bash
+```
+
+- 默认拉取内网 `.meta.json` 指向的最新版本；如需锁定版本：
+
+```bash
+CUA_ROUTER_VERSION=0.4.18 bash -c "$(curl -fsSL https://s3plus.sankuai.com/aiagent-bucket/cua-resources/install-intranet.sh)"
+```
+
+- 可用 `CUA_ROUTER_INTRANET_BASE` 覆盖资源基址；其余参数（`--target` / `--vendor-mode` / `--force` / `--no-cursor`）与方式 A 一致。
+- 流程：内网下载 slim 技能包 → 内网下载 vendor（本机有 ChatGPT.app 时优先本地提取）→ 注册到 `~/.cursor/skills` 并 Pin，automan profile 存在时同步实体安装。
+
 ---
 
 ## 启动与验证
@@ -113,7 +130,8 @@ cua-router-basic/
 ├── .cursor-plugin/       # Cursor Plugin manifest
 ├── .claude-plugin/       # Claude Code Plugin + marketplace
 ├── scripts/              # 安装、服务、发布脚本
-│   ├── install-remote.sh # Agent 远程一键安装
+│   ├── install-remote.sh # Agent 远程一键安装（GitHub）
+│   ├── install-intranet.sh # 内网 S3 一键安装（S3plus）
 │   ├── install-automan.sh # 安装到 ~/.automan/claude-code-agents/cua-agent/skills
 │   ├── install-full.sh   # 完整安装
 │   ├── install-slim.sh   # 仅技能本体
@@ -121,7 +139,8 @@ cua-router-basic/
 │   ├── setup-vendor.sh   # 从 ChatGPT.app 提取 vendor
 │   ├── daemon.sh         # start | stop | status | restart
 │   ├── exec.sh           # 调用 /exec 端点
-│   └── release.sh        # 维护者发布
+│   ├── release.sh        # 维护者发布（GitHub）
+│   └── intranet/         # 内网 S3plus 发布工具（不入 Git，涉及内网接口）
 ├── vendor/               # 运行时二进制（~735 MB，不入 Git）
 └── runtime/              # 本地 CODEX_HOME（不入 Git，首次启动生成）
 ```
@@ -142,6 +161,8 @@ cua-router-basic/
 | `CUA_ROUTER_VENDOR_URL` | 直接指定 vendor tarball URL |
 | `CUA_ROUTER_GITHUB_REPO` | 覆盖 GitHub 仓库（默认 `shileima/cua-router-basic`） |
 | `CUA_ROUTER_INSTALL_DIR` | 覆盖默认安装目录 |
+| `CUA_ROUTER_INTRANET_BASE` | 内网资源基址，默认 `https://s3plus.sankuai.com/aiagent-bucket/cua-resources` |
+| `CUA_ROUTER_VERSION` | 锁定安装版本（内网/远程安装） |
 | `CHATGPT_RESOURCES` | setup-vendor 源路径，默认 `/Applications/ChatGPT.app/Contents/Resources` |
 
 默认安装目录：若存在 automan `cua-agent` profile 目录 `~/.automan/claude-code-agents/cua-agent/`，则安装到 `~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic`；否则安装到 `~/.cursor/skills/cua-router-basic`。
@@ -183,6 +204,23 @@ bash scripts/release.sh --dry-run 0.3.0
 # 或
 bash scripts/package-release.sh
 ```
+
+### 发布到内网 S3（S3plus，供方式 F 安装）
+
+内网发布工具位于 `scripts/intranet/`，**不入 Git**（依赖内网凭证代理接口）。发布产物按版本号归档到 `cua-resources/versions/<version>/`，并刷新稳定入口 `cua-resources/install-intranet.sh`。
+
+```bash
+# 1. 先打包（本地 vendor/ 就绪时含 vendor，否则加 --skip-vendor 只发 slim）
+bash scripts/release.sh --dry-run 0.4.18
+
+# 2. 安装依赖并发布（需在公司内网）
+cd scripts/intranet
+npm install
+node publish-intranet-s3.js               # 读取 .meta.json 版本
+node publish-intranet-s3.js --dry-run      # 预览待上传文件
+```
+
+发布完成后，客户端即可用方式 F 的 `curl | bash` 从内网安装。详见 `scripts/intranet/README.md`。
 
 ### 版本号管理
 

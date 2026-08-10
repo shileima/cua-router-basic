@@ -236,6 +236,8 @@ cmd_start() {
 
   if ! vendor_ready "$SKILL_ROOT"; then
     echo "[cua-router] vendor missing, bootstrapping (auto)..." >&2
+    # Intranet installs keep vendor download on the intranet (no GitHub).
+    apply_intranet_release_base "$SKILL_ROOT"
     bash "$SCRIPT_DIR/install-full.sh" --skill-root "$SKILL_ROOT" --vendor-mode auto --no-cursor
   fi
 

@@ -154,6 +154,9 @@ main() {
   info "cua-router-basic intranet install (version=$VERSION, target=$TARGET)"
   info "intranet base: $CUA_ROUTER_INTRANET_BASE"
   ensure_slim_package
+  # Remember this is an intranet install so daemon.sh / update-intranet.sh keep
+  # vendor bootstrap and updates on the intranet (no GitHub fallback).
+  write_intranet_marker "$TARGET" "$CUA_ROUTER_INTRANET_BASE"
   if vendor_ready "$TARGET"; then
     info "vendor already present"
     if [ "$INSTALL_CURSOR" -eq 1 ]; then

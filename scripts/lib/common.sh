@@ -203,6 +203,58 @@ fetch_intranet_version() {
   curl -fsSL "$meta_url" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])'
 }
 
+# Marker file dropped into a skill install dir to remember it was installed from
+# the intranet. Lets daemon.sh / update-intranet.sh keep vendor bootstrap and
+# updates on the intranet (no GitHub) without re-passing env vars every time.
+intranet_marker_path() {
+  local skill_root="${1:-$COMMON_SKILL_ROOT}"
+  printf '%s/.cua-intranet' "$skill_root"
+}
+
+# Record an intranet install. Stores the resource base URL (line 1) so daemon /
+# update flows can rebuild per-version URLs later.
+write_intranet_marker() {
+  local skill_root="$1"
+  local base="${2:-$(intranet_base)}"
+  local marker
+  marker="$(intranet_marker_path "$skill_root")"
+  printf '%s\n' "${base%/}" > "$marker"
+  info "marked intranet install: $marker"
+}
+
+# Echo the intranet base recorded in the marker (falls back to default base when
+# the marker exists but is empty). Returns non-zero when no marker is present.
+read_intranet_marker() {
+  local skill_root="${1:-$COMMON_SKILL_ROOT}"
+  local marker line
+  marker="$(intranet_marker_path "$skill_root")"
+  [ -f "$marker" ] || return 1
+  line="$(sed -n '1p' "$marker" 2>/dev/null | tr -d '[:space:]')"
+  if [ -z "$line" ]; then
+    intranet_base
+  else
+    printf '%s' "${line%/}"
+  fi
+}
+
+# When a skill root carries the intranet marker, point vendor bootstrap /
+# download at the intranet per-version directory by exporting
+# CUA_ROUTER_RELEASE_BASE. An explicit CUA_ROUTER_RELEASE_BASE always wins.
+apply_intranet_release_base() {
+  local skill_root="${1:-$COMMON_SKILL_ROOT}"
+  local base version
+  [ -n "${CUA_ROUTER_RELEASE_BASE:-}" ] && return 0
+  base="$(read_intranet_marker "$skill_root")" || return 0
+  [ -n "$base" ] || return 0
+  version="$(read_version "$skill_root" 2>/dev/null || true)"
+  [ -n "$version" ] || return 0
+  CUA_ROUTER_INTRANET_BASE="$base"
+  export CUA_ROUTER_INTRANET_BASE
+  CUA_ROUTER_RELEASE_BASE="$(intranet_version_base "$version")"
+  export CUA_ROUTER_RELEASE_BASE
+  info "intranet mode: vendor source = $CUA_ROUTER_RELEASE_BASE"
+}
+
 automan_root_dir() {
   printf '%s' "${CUA_ROUTER_AUTOMAN_ROOT:-$HOME/.automan}"
 }

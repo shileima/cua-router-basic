@@ -16,6 +16,9 @@ dist/
 # public download-only and stays tracked.
 scripts/intranet/
 
+# Intranet install marker (written at install time by install-intranet.sh)
+.cua-intranet
+
 # macOS / editor
 .DS_Store
 *.swp

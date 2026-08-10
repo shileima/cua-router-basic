@@ -101,6 +101,15 @@ CUA_ROUTER_VERSION=0.4.18 bash -c "$(curl -fsSL https://s3plus.sankuai.com/aiage
 
 - 可用 `CUA_ROUTER_INTRANET_BASE` 覆盖资源基址；其余参数（`--target` / `--vendor-mode` / `--force` / `--no-cursor`）与方式 A 一致。
 - 流程：内网下载 slim 技能包 → 内网下载 vendor（本机有 ChatGPT.app 时优先本地提取）→ 注册到 `~/.cursor/skills` 并 Pin，automan profile 存在时同步实体安装。
+- 安装后会在技能目录写入 `.cua-intranet` 标记，之后 `daemon.sh` 自举 vendor、更新均自动走内网、不回落 GitHub。
+
+**内网更新**（automan 宿主）：
+
+```bash
+curl -fsSL https://s3plus.sankuai.com/aiagent-bucket/cua-resources/update-intranet.sh | bash -s -- --check  # 只检查
+curl -fsSL https://s3plus.sankuai.com/aiagent-bucket/cua-resources/update-intranet.sh | bash               # 有更新则应用
+# 或本地已安装： bash "$SKILL_ROOT/scripts/update-intranet.sh"
+```
 
 ---
 

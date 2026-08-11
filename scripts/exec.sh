@@ -108,7 +108,9 @@ wrap_code_for_repl() {
 
 ensure_service() {
   if [ "$ENSURE_START" -eq 1 ]; then
-    bash "$SCRIPT_DIR/daemon.sh" start >/dev/null
+    CUA_ROUTER_START_READINESS=off \
+      CUA_ROUTER_HEALTH_MODE=app-server \
+      bash "$SCRIPT_DIR/daemon.sh" start >/dev/null
   fi
 }
 

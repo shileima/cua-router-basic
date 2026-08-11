@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -44,6 +44,14 @@ NEWAPI_BASE = os.environ.get(
     "https://newapi.waimai.test.sankuai.com/v1",
 )
 DEFAULT_MODEL = os.environ.get("CUA_ROUTER_MODEL", "gpt-5.4-responses")
+
+
+class RouterHTTPServer(ThreadingHTTPServer):
+    """Keep liveness endpoints responsive while a deep sky probe is blocked."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
 
 SKY_BOOTSTRAP = f"""
 const {{ setupComputerUseRuntime }} = await import("{CLIENT_MJS}");
@@ -627,7 +635,7 @@ if __name__ == "__main__":
     _session.ensure()
 
     print(f"[cua-router] listening on http://localhost:{args.port}", flush=True)
-    server = HTTPServer(("127.0.0.1", args.port), RouterHandler)
+    server = RouterHTTPServer(("127.0.0.1", args.port), RouterHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

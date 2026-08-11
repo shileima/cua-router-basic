@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SKILL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SKILL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd -P)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 PORT="${CUA_ROUTER_PORT:-18901}"
@@ -190,16 +190,23 @@ cua_finalize_ready() {
   return 1
 }
 
+start_readiness_enabled() {
+  [ "${CUA_ROUTER_START_READINESS:-auto}" != "off" ]
+}
+
 cmd_start() {
   if health_check; then
     if router_identity_matches_current; then
       echo "[cua-router] already healthy on ${BASE}"
       pid="$(read_pid || true)"
       [ -n "${pid:-}" ] && echo "[cua-router] pid=${pid}"
+      if ! start_readiness_enabled; then
+        return 0
+      fi
       if cua_finalize_ready; then
         return 0
       fi
-      if [ "${CUA_ROUTER_AUTO_RESTART_ON_NOT_READY:-1}" = "1" ] \
+      if [ "${CUA_ROUTER_AUTO_RESTART_ON_NOT_READY:-0}" = "1" ] \
         && [ "${CUA_ROUTER_READY_RESTARTED:-0}" != "1" ]; then
         echo "[cua-router] sky 未就绪，自动重启 cua-router 以重建 app-server 连接..." >&2
         cmd_stop
@@ -251,7 +258,9 @@ cmd_start() {
   for i in $(seq 1 45); do
     if health_check; then
       echo "[cua-router] ready after ${i}s"
-      cua_finalize_ready || true
+      if start_readiness_enabled; then
+        cua_finalize_ready || true
+      fi
       return 0
     fi
     sleep 1

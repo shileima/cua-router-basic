@@ -77,6 +77,24 @@ class RouterIdentityTests(unittest.TestCase):
         self.assertIsInstance(identity["pid"], int)
 
 
+class RuntimeResilienceTests(unittest.TestCase):
+    def test_exec_uses_liveness_only_when_ensuring_router(self):
+        script = (SCRIPTS_DIR / "exec.sh").read_text(encoding="utf-8")
+
+        self.assertIn('CUA_ROUTER_START_READINESS=off', script)
+        self.assertIn('CUA_ROUTER_HEALTH_MODE=app-server', script)
+        self.assertIn('bash "$SCRIPT_DIR/daemon.sh" start', script)
+
+    def test_daemon_does_not_auto_restart_on_readiness_failure_by_default(self):
+        script = (SCRIPTS_DIR / "daemon.sh").read_text(encoding="utf-8")
+
+        self.assertIn('${CUA_ROUTER_AUTO_RESTART_ON_NOT_READY:-0}', script)
+        self.assertNotIn('${CUA_ROUTER_AUTO_RESTART_ON_NOT_READY:-1}', script)
+
+    def test_router_uses_threading_http_server(self):
+        self.assertTrue(issubclass(cua_router.RouterHTTPServer, cua_router.ThreadingHTTPServer))
+
+
 class RecordDeskResolveRootTests(unittest.TestCase):
     def test_prefers_sibling_cua_router_before_global_automan_install(self):
         resolver = ROOT / "record-desk-basic" / "scripts" / "lib" / "resolve-cua-root.sh"

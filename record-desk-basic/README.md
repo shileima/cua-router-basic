@@ -15,7 +15,7 @@ macOS 桌面「录制 → 回放 → 转技能」独立技能。把 ChatGPT app 
 | 录制捕获 / 录制生命周期 / 录制转技能 | **record-desk-basic**（本技能） |
 | Computer Use 执行 / AX 缓存 / sky·ax 运行时 | **cua-router-basic**（回放技能依赖它执行） |
 
-两者共用同一份 vendor 二进制，但服务链、生命周期、失败域相互隔离。
+两者共用同一份 vendor 二进制和同一个由 `launchd` 托管的 codex app-server。录制必须复用该 app-server 的事件观察者上下文，因此服务链并非彼此隔离；`record-desk-basic` 只负责录制生命周期和产物消费。
 
 ## 快速开始
 
@@ -23,7 +23,7 @@ macOS 桌面「录制 → 回放 → 转技能」独立技能。把 ChatGPT app 
 # 0) 依赖校验（定位 cua-router-basic + 拉起 cua-router 守护进程）
 bash scripts/setup.sh
 
-# 1) fallback：开始录制（秒回，返回 eventsPath；屏幕出现录制指示器）
+# 1) 手动 fallback：开始录制（秒回，返回 eventsPath；屏幕出现录制指示器）
 bash scripts/event-stream.sh start
 #    —— 结束本轮，等用户把演示做完 ——
 
@@ -32,7 +32,7 @@ bash scripts/event-stream.sh status
 bash scripts/event-stream.sh stop     # 返回 metadataPath / eventsPath
 ```
 
-> 优先使用插件宿主托管的 `record-desk-event-stream` MCP server；`event-stream.sh mcp` 负责以 stdio MCP server 形态暴露官方 `event_stream_*` 工具。`event-stream.sh start/status/stop` 是 fallback，会经 cua-router-basic 的 codex app-server 托管驱动 `/record`。
+> 默认优先使用插件宿主托管的 `record-desk-event-stream` MCP server；`event-stream.sh mcp` 负责以 stdio MCP server 形态暴露官方 `event_stream_*` 工具。`event-stream.sh start/status/stop` 是手动 fallback，会经 cua-router-basic 的 codex app-server 托管驱动 `/record`。
 
 ## 目录
 
@@ -55,6 +55,7 @@ record-desk-basic/
 
 本技能与 `cua-router-basic` 一样**完全自包含**：runtime app 与 client 二进制都取自 cua-router-basic 的 vendor，**不依赖本地 ChatGPT app 或 `~/.codex`**。
 
-- 首选录制由宿主托管的 `record-desk-event-stream` MCP 驱动，对齐 Codex 官方 Record & Replay。fallback 由 **cua-router-basic 的 codex app-server** 托管驱动。普通 shell 裸 spawn `SkyComputerUseClient event-stream mcp` 会连上服务但收不到 XPC 回复而挂起——录制事件需要 app-server 的事件观察者连接来承接。
+- fallback 由 **cua-router-basic 的签名 codex app-server** 托管驱动。普通 shell 裸 spawn `SkyComputerUseClient event-stream mcp` 会因缺少事件观察者上下文而挂起；普通 Python 再 spawn codex 还会因不可信祖先链报 `-1743`。当前 `daemon.sh` 通过 `launchd` 直接启动技能内签名 codex，router 仅走 token 化 loopback WebSocket，完整 RCA 见 `references/recording-architecture.md`。
 - 首次需给 vendor app（`vendor/computer-use/Codex Computer Use.app`）授予 macOS **屏幕录制** 与 **辅助功能** 权限；授权一次后长期有效。`start` 后屏幕出现**录制指示器**，无阻塞确认框。
+- 起录前不要执行 `/ready` 深探针或 `sky.list_apps()`；它们可能抢占唯一事件观察者连接并导致约 35 秒录制超时。`daemon.sh` 已默认关闭启动时 deep readiness。
 - 空闲时 `status` 可能回 `-10005 Record & Replay is not enabled for this user`（账号 feature-flag 探测），不影响本地 `start` 真正录制。

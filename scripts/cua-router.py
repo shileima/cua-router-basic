@@ -17,8 +17,14 @@ newapi computer-use tool_call 路由器
 """
 
 import argparse
+import contextlib
 import json
 import os
+import base64
+import hashlib
+import signal
+import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -59,11 +65,8 @@ await setupComputerUseRuntime({{ globals: globalThis }});
 console.log("sky bootstrapped, keys:", Object.keys(globalThis.sky).join(","));
 """
 
-# Readiness deep-probe: forces the sky native pipe to actually connect to the
-# Sky Computer Use background service (com.openai.sky.CUAService). list_apps is
-# the lightest sky RPC — no target app, read-only, does not change focus — yet it
-# still requires the native socket + CUAService to be alive, so it is the ideal
-# signal that the whole desktop-control stack (layer ⑤) is ready, not just node_repl.
+# Readiness deep-probe: list_apps only proves the native pipe is connected.
+# A real AX snapshot is required to prove desktop-control calls will work.
 SKY_READINESS_PROBE = f"""
 {{
   if (typeof globalThis.sky === "undefined" || !globalThis.sky) {{
@@ -72,7 +75,10 @@ SKY_READINESS_PROBE = f"""
   }}
   const apps = await globalThis.sky.list_apps();
   const n = Array.isArray(apps) ? apps.length : (apps && apps.apps ? apps.apps.length : -1);
-  nodeRepl.write("cua-ready:" + n);
+  const readyApp = "com.apple.finder";
+  const state = await globalThis.sky.get_app_state({{ app: readyApp, disableDiff: true }});
+  const textLen = String((state && state.text) || "").length;
+  nodeRepl.write("cua-ready:" + n + ":ax:" + readyApp + ":" + textLen);
 }}
 """
 
@@ -113,11 +119,94 @@ def router_identity() -> dict:
 # app-server session (singleton, lazy-init)
 # ──────────────────────────────────────────────
 
+class WebSocketTransport:
+    """Minimal RFC 6455 client for the local vendor app-server."""
+
+    def __init__(self, url: str, token: str):
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        self._sock = socket.create_connection((parsed.hostname, parsed.port), timeout=10)
+        self._sock.settimeout(None)
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = parsed.path or "/"
+        request = (
+            f"GET {path} HTTP/1.1\r\nHost: {parsed.hostname}:{parsed.port}\r\n"
+            f"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\nAuthorization: Bearer {token}\r\n\r\n"
+        )
+        self._sock.sendall(request.encode())
+        response = b""
+        while b"\r\n\r\n" not in response:
+            response += self._sock.recv(4096)
+        if not response.startswith(b"HTTP/1.1 101"):
+            raise RuntimeError(f"app-server websocket handshake failed: {response.splitlines()[0].decode()}")
+        expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+        if f"sec-websocket-accept: {expected}".lower() not in response.decode(errors="replace").lower():
+            raise RuntimeError("app-server websocket handshake returned an invalid accept key")
+        self._write_lock = threading.Lock()
+
+    def _read_exact(self, size: int) -> bytes:
+        data = b""
+        while len(data) < size:
+            chunk = self._sock.recv(size - len(data))
+            if not chunk:
+                raise EOFError("app-server websocket closed")
+            data += chunk
+        return data
+
+    def recv(self) -> bytes:
+        while True:
+            first, second = self._read_exact(2)
+            opcode = first & 0x0F
+            length = second & 0x7F
+            if length == 126:
+                length = struct.unpack("!H", self._read_exact(2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", self._read_exact(8))[0]
+            payload = self._read_exact(length)
+            if opcode == 0x8:
+                raise EOFError("app-server websocket closed")
+            if opcode == 0x9:
+                self._send_frame(payload, opcode=0xA)
+                continue
+            if opcode == 0x1:
+                return payload
+
+    def _send_frame(self, payload: bytes, opcode: int = 0x1):
+        mask = os.urandom(4)
+        length = len(payload)
+        header = bytes([0x80 | opcode])
+        if length < 126:
+            header += bytes([0x80 | length])
+        elif length < 65536:
+            header += bytes([0xFE]) + struct.pack("!H", length)
+        else:
+            header += bytes([0xFF]) + struct.pack("!Q", length)
+        masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        with self._write_lock:
+            self._sock.sendall(header + mask + masked)
+
+    def send(self, payload: bytes):
+        self._send_frame(payload)
+
+    def close(self):
+        with contextlib.suppress(Exception):
+            self._send_frame(b"", opcode=0x8)
+        with contextlib.suppress(Exception):
+            self._sock.close()
+
+
 class AppServerSession:
     def __init__(self):
         self._proc = None
+        self._transport = None
         self._responses: list[dict] = []
         self._lock = threading.Lock()
+        self._idle = threading.Condition(self._lock)
+        self._call_lock = threading.Lock()
+        self._active_calls = 0
+        self._closing = False
+        self._starting = False
         self._req_id = 0
         self._thread_id: Optional[str] = None
         self._sky_bootstrapped = False
@@ -133,22 +222,30 @@ class AppServerSession:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(RUNTIME)
 
-        print(f"[app-server] starting via bundled codex: {codex}", flush=True)
-        print(f"[app-server] config: {config_path}", flush=True)
-        self._proc = subprocess.Popen(
-            [codex, "app-server", "--listen", "stdio://"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            cwd=str(SKILL_ROOT),
-        )
-        threading.Thread(target=self._read_loop, daemon=True).start()
-        threading.Thread(target=self._read_stderr_loop, daemon=True).start()
+        endpoint = os.environ.get("CUA_ROUTER_APP_SERVER_WS", "")
+        token_file = os.environ.get("CUA_ROUTER_APP_SERVER_TOKEN_FILE", "")
+        if endpoint and token_file:
+            token = Path(token_file).read_text(encoding="utf-8").strip()
+            print(f"[app-server] connecting to bundled launchd app-server: {endpoint}", flush=True)
+            self._transport = WebSocketTransport(endpoint, token)
+            threading.Thread(target=self._read_loop, daemon=True).start()
+        else:
+            print(f"[app-server] starting via bundled codex: {codex}", flush=True)
+            print(f"[app-server] config: {config_path}", flush=True)
+            self._proc = subprocess.Popen(
+                [codex, "app-server", "--listen", "stdio://"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                cwd=str(SKILL_ROOT),
+            )
+            threading.Thread(target=self._read_loop, daemon=True).start()
+            threading.Thread(target=self._read_stderr_loop, daemon=True).start()
 
         r = self._req(self._next_id(), "initialize", {
             "clientInfo": {"name": "cua-router", "version": "1.0"},
-            "capabilities": {"experimentalApi": True}
+            "capabilities": {"experimentalApi": True, "mcpServerOpenaiFormElicitation": True}
         })
         if not r:
             raise RuntimeError("app-server initialize timeout")
@@ -172,13 +269,17 @@ class AppServerSession:
         print("[app-server] warning: node_repl ready event not seen", flush=True)
 
     def _read_loop(self):
-        for raw in self._proc.stdout:
+        while True:
             try:
+                raw = self._transport.recv() if self._transport else self._proc.stdout.readline()
+                if not raw:
+                    return
                 msg = json.loads(raw)
                 with self._lock:
                     self._responses.append(msg)
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[app-server] read loop stopped: {exc}", flush=True)
+                return
 
     def _read_stderr_loop(self):
         for raw in self._proc.stderr:
@@ -188,8 +289,12 @@ class AppServerSession:
 
     def _req(self, id_: int, method: str, params: Any, timeout: float = 15.0) -> Optional[Dict]:
         msg = {"jsonrpc": "2.0", "id": id_, "method": method, "params": params}
-        self._proc.stdin.write((json.dumps(msg) + "\n").encode())
-        self._proc.stdin.flush()
+        payload = json.dumps(msg).encode()
+        if self._transport:
+            self._transport.send(payload)
+        else:
+            self._proc.stdin.write(payload + b"\n")
+            self._proc.stdin.flush()
         deadline = time.time() + timeout
         while time.time() < deadline:
             time.sleep(0.2)
@@ -200,13 +305,67 @@ class AppServerSession:
         return None
 
     def ensure(self):
-        with self._lock:
-            need_start = self._proc is None or self._proc.poll() is not None
-        if need_start:
+        with self._idle:
+            while self._starting and not self._closing:
+                self._idle.wait()
+            if self._closing:
+                raise RuntimeError("app-server session is shutting down")
+            if self._transport is not None:
+                return
+            if self._proc is not None and self._proc.poll() is None:
+                return
+            self._starting = True
+        try:
             self._start()
+        finally:
+            with self._idle:
+                self._starting = False
+                self._idle.notify_all()
+
+    @contextlib.contextmanager
+    def _operation(self):
+        with self._idle:
+            if self._closing:
+                raise RuntimeError("app-server session is shutting down")
+            self._active_calls += 1
+        try:
+            yield
+        finally:
+            with self._idle:
+                self._active_calls -= 1
+                if self._active_calls == 0:
+                    self._idle.notify_all()
+
+    def close(self):
+        """Terminate the bundled app-server owned by this router."""
+        with self._idle:
+            self._closing = True
+            while self._active_calls or self._starting:
+                self._idle.wait()
+            proc = self._proc
+            transport = self._transport
+            self._proc = None
+            self._transport = None
+            self._thread_id = None
+            self._sky_bootstrapped = False
+        if transport is not None:
+            transport.close()
+        if proc is None or proc.poll() is not None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
 
     def call_js(self, code: str, timeout_ms: int = 30000) -> dict:
         """Execute JS via node_repl and return MCP tool result."""
+        with self._call_lock:
+            with self._operation():
+                return self._call_js(code, timeout_ms)
+
+    def _call_js(self, code: str, timeout_ms: int) -> dict:
         self.ensure()
 
         if not self._sky_bootstrapped:
@@ -233,6 +392,10 @@ class AppServerSession:
         return r.get("result", {"content": [{"type": "text", "text": "no result"}], "isError": True})
 
     def call_event_stream(self, action: str, timeout_ms: int = 30000) -> dict:
+        with self._operation():
+            return self._call_event_stream(action, timeout_ms)
+
+    def _call_event_stream(self, action: str, timeout_ms: int) -> dict:
         """Drive Record & Replay via the app-server-hosted event_stream mcp.
 
         Recording only works when the event-stream mcp server is hosted by the
@@ -314,6 +477,8 @@ def _classify_probe_error(text: str) -> str:
         or "closed before response" in low
     ):
         return "cua_service_down"
+    if "exited before returning a response" in low or "-10005" in low:
+        return "cua_service_rpc_failed"
     if "timed out" in low or "timeout" in low:
         return "timeout"
     if (
@@ -505,6 +670,12 @@ def _get_api_key() -> str:
 # HTTP server
 # ──────────────────────────────────────────────
 
+def shutdown_router(server, session):
+    """Release resources owned by the router after its serve loop stops."""
+    session.close()
+    server.server_close()
+
+
 class RouterHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[http] {fmt % args}", flush=True)
@@ -636,7 +807,20 @@ if __name__ == "__main__":
 
     print(f"[cua-router] listening on http://localhost:{args.port}", flush=True)
     server = RouterHTTPServer(("127.0.0.1", args.port), RouterHandler)
+    stopping = threading.Event()
+
+    def request_shutdown(signum, _frame):
+        if stopping.is_set():
+            return
+        stopping.set()
+        print(f"[cua-router] received signal {signum}, shutting down...", flush=True)
+        # BaseServer.shutdown() must run outside the serve_forever() thread.
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[cua-router] stopped")
+    finally:
+        shutdown_router(server, _session)
+        print("[cua-router] stopped", flush=True)

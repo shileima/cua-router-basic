@@ -10,7 +10,13 @@ source "$SCRIPT_DIR/lib/common.sh"
 PORT="${CUA_ROUTER_PORT:-18901}"
 PID_FILE="${CUA_ROUTER_PID_FILE:-/tmp/cua-router.pid}"
 LOG_FILE="${CUA_ROUTER_LOG_FILE:-/tmp/cua-router.log}"
+LOCK_FILE="${CUA_ROUTER_LOCK_FILE:-/tmp/cua-router-${PORT}.lock}"
 BASE="http://localhost:${PORT}"
+LOCK_HELD=0
+APP_SERVER_PORT="${CUA_ROUTER_APP_SERVER_PORT:-$((PORT + 1))}"
+APP_SERVER_WS="ws://127.0.0.1:${APP_SERVER_PORT}"
+APP_SERVER_LABEL="com.meituan.cua-router.app-server.${PORT}"
+APP_SERVER_LOG="${CUA_ROUTER_APP_SERVER_LOG:-/tmp/cua-router-app-server-${PORT}.log}"
 
 CUA_SERVICE_BUNDLE_ID="${CUA_SERVICE_BUNDLE_ID:-com.openai.sky.CUAService}"
 CUA_SERVICE_SOCKET="${CUA_SERVICE_SOCKET:-$HOME/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/IPC/computeruse.sock}"
@@ -75,6 +81,39 @@ service = data.get("service") or ""
 if service == "cua-router-basic" and actual and os.path.realpath(actual) == expected:
     sys.exit(0)
 sys.exit(1)
+PY
+}
+
+router_is_cua_service() {
+  local body
+  body="$(router_health_json)" || return 1
+  python3 - "$body" <<'PY'
+import json
+import sys
+
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+sys.exit(0 if data.get("service") == "cua-router-basic" else 1)
+PY
+}
+
+active_router_pid() {
+  local body
+  body="$(router_health_json)" || return 1
+  python3 - "$body" <<'PY'
+import json
+import sys
+
+try:
+    pid = int(json.loads(sys.argv[1]).get("pid", 0))
+except Exception:
+    sys.exit(1)
+if pid > 1:
+    print(pid)
+else:
+    sys.exit(1)
 PY
 }
 
@@ -156,6 +195,60 @@ read_pid() {
   fi
 }
 
+pid_matches_router() {
+  local pid="$1" command
+  pid_alive "$pid" || return 1
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$command" in
+    *"/scripts/cua-router.py --port $PORT"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+pid_matches_current_install() {
+  local pid="$1" command
+  pid_matches_router "$pid" || return 1
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$command" in
+    *"$SCRIPT_DIR/cua-router.py --port $PORT"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+acquire_lifecycle_lock() {
+  local attempt owner
+  command -v shlock >/dev/null 2>&1 || {
+    echo "[cua-router] error: macOS shlock is required for lifecycle locking" >&2
+    return 1
+  }
+  # Migrate stale directory locks created by versions before shlock was used.
+  if [ -d "$LOCK_FILE" ]; then
+    owner="$(cat "$LOCK_FILE/pid" 2>/dev/null || true)"
+    if [ -z "$owner" ] || ! pid_alive "$owner"; then
+      rm -rf "$LOCK_FILE"
+    fi
+  fi
+  for attempt in $(seq 1 100); do
+    if shlock -f "$LOCK_FILE" -p $$; then
+      LOCK_HELD=1
+      return 0
+    fi
+    sleep 0.1
+  done
+  owner="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+  echo "[cua-router] error: lifecycle lock timeout: ${LOCK_FILE} (owner=${owner:-unknown})" >&2
+  return 1
+}
+
+release_lifecycle_lock() {
+  local owner
+  if [ "$LOCK_HELD" -eq 1 ]; then
+    owner="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+    [ "$owner" = "$$" ] && rm -f "$LOCK_FILE"
+    LOCK_HELD=0
+  fi
+}
+
 cua_preflight_chrome_warn() {
   [ "$(uname -s)" = "Darwin" ] || return 0
   [ -f "$SCRIPT_DIR/lib/preflight-chrome.sh" ] || return 0
@@ -191,7 +284,66 @@ cua_finalize_ready() {
 }
 
 start_readiness_enabled() {
-  [ "${CUA_ROUTER_START_READINESS:-auto}" != "off" ]
+  # A deep node_repl probe opens the single Sky event observer. Do not run it
+  # automatically because Record & Replay must own that observer connection.
+  [ "${CUA_ROUTER_START_READINESS:-off}" != "off" ]
+}
+
+app_server_start() {
+  local runtime="$CUA_ROUTER_RUNTIME_DIR"
+  local token_file="$runtime/app-server.token"
+  local plist="$runtime/app-server.plist"
+  local codex="$SKILL_ROOT/vendor/codex/bin/codex"
+
+  python3 - "$runtime" "$token_file" "$plist" "$codex" "$APP_SERVER_WS" "$APP_SERVER_LABEL" "$APP_SERVER_LOG" <<'PY'
+import os
+import plistlib
+import secrets
+import sys
+
+runtime, token_file, plist, codex, endpoint, label, log_file = sys.argv[1:]
+os.makedirs(runtime, mode=0o700, exist_ok=True)
+os.chmod(runtime, 0o700)
+with open(token_file, "w", encoding="utf-8") as handle:
+    handle.write(secrets.token_urlsafe(32))
+os.chmod(token_file, 0o600)
+payload = {
+    "Label": label,
+    "ProgramArguments": [
+        codex, "app-server", "--listen", endpoint,
+        "--ws-auth", "capability-token", "--ws-token-file", token_file,
+    ],
+    "EnvironmentVariables": {
+        "CODEX_HOME": runtime,
+        "HOME": os.path.expanduser("~"),
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    },
+    "WorkingDirectory": os.path.dirname(os.path.dirname(codex)),
+    "RunAtLoad": True,
+    "KeepAlive": False,
+    "StandardOutPath": log_file,
+    "StandardErrorPath": log_file,
+}
+with open(plist, "wb") as handle:
+    plistlib.dump(payload, handle)
+PY
+
+  launchctl bootout "gui/$(id -u)/$APP_SERVER_LABEL" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$plist"
+  for _ in $(seq 1 20); do
+    if curl -sf "http://127.0.0.1:${APP_SERVER_PORT}/readyz" >/dev/null 2>&1; then
+      export CUA_ROUTER_APP_SERVER_WS="$APP_SERVER_WS"
+      export CUA_ROUTER_APP_SERVER_TOKEN_FILE="$token_file"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[cua-router] bundled app-server failed to start; see ${APP_SERVER_LOG}" >&2
+  return 1
+}
+
+app_server_stop() {
+  launchctl bootout "gui/$(id -u)/$APP_SERVER_LABEL" >/dev/null 2>&1 || true
 }
 
 cmd_start() {
@@ -217,13 +369,27 @@ cmd_start() {
       return 0
     fi
 
-    echo "[cua-router] 检测到 ${BASE} 上已有其他 cua-router 安装实例，正在切换到当前安装..." >&2
+    if router_is_cua_service && [ "${CUA_ROUTER_FORCE_TAKEOVER:-0}" != "1" ]; then
+      echo "[cua-router] reusing healthy service from another install on ${BASE}"
+      router_identity_summary
+      echo "[cua-router] set CUA_ROUTER_FORCE_TAKEOVER=1 to replace it explicitly"
+      if start_readiness_enabled; then
+        cua_finalize_ready || true
+      fi
+      return 0
+    fi
+
+    if [ "${CUA_ROUTER_FORCE_TAKEOVER:-0}" != "1" ]; then
+      echo "[cua-router] error: ${BASE} is occupied by another service; refusing automatic takeover" >&2
+      return 1
+    fi
+
+    echo "[cua-router] explicit takeover requested; stopping the active service on ${BASE}..." >&2
     router_identity_summary >&2 || true
     cmd_stop
     sleep 2
     if health_check; then
-      echo "[cua-router] error: 无法停止端口 ${PORT} 上的不匹配服务" >&2
-      router_identity_summary >&2 || true
+      echo "[cua-router] error: failed to stop the active service on port ${PORT}" >&2
       return 1
     fi
   fi
@@ -232,9 +398,16 @@ cmd_start() {
   if [ -n "${old_pid:-}" ]; then
     if pid_alive "$old_pid"; then
       if ! health_check; then
-        echo "[cua-router] pid ${old_pid} alive but unhealthy, restarting..."
-        kill "$old_pid" 2>/dev/null || true
-        sleep 1
+        if pid_matches_current_install "$old_pid" \
+          || { [ "${CUA_ROUTER_FORCE_TAKEOVER:-0}" = "1" ] && pid_matches_router "$old_pid"; }; then
+          echo "[cua-router] pid ${old_pid} alive but unhealthy, restarting..."
+          kill "$old_pid" 2>/dev/null || true
+          sleep 1
+        else
+          echo "[cua-router] foreign pid ${old_pid} is alive but unhealthy; refusing automatic takeover" >&2
+          echo "[cua-router] set CUA_ROUTER_FORCE_TAKEOVER=1 to replace it explicitly" >&2
+          return 1
+        fi
       fi
     else
       rm -f "$PID_FILE"
@@ -250,6 +423,8 @@ cmd_start() {
 
   export_cua_runtime_dir
   echo "[cua-router] runtime=${CUA_ROUTER_RUNTIME_DIR}"
+  python3 -c "import sys; sys.path.insert(0, '$SCRIPT_DIR'); import vendor_paths; vendor_paths.write_runtime_config()"
+  app_server_start
 
   nohup python3 "$SCRIPT_DIR/cua-router.py" --port "$PORT" >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
@@ -271,48 +446,53 @@ cmd_start() {
 }
 
 cmd_stop() {
-  stopped=0
-  pid="$(read_pid || true)"
-  if [ -n "${pid:-}" ] && pid_alive "$pid"; then
-    if kill "$pid" 2>/dev/null; then
-      echo "[cua-router] stopped pid=${pid}"
-      stopped=1
-    fi
-  fi
-  rm -f "$PID_FILE"
+  local pid="" stopped=0
 
-  if [ "$stopped" -eq 0 ]; then
-    if pkill -f "scripts/cua-router.py --port ${PORT}" 2>/dev/null; then
-      echo "[cua-router] stopped by pattern match"
-      stopped=1
+  if health_check; then
+    if router_identity_matches_current || [ "${CUA_ROUTER_FORCE_TAKEOVER:-0}" = "1" ]; then
+      pid="$(active_router_pid || true)"
     else
-      if health_check && command -v lsof >/dev/null 2>&1; then
-        pids="$(lsof -nP -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
-        if [ -n "$pids" ]; then
-          killed=0
-          for p in $pids; do
-            if kill "$p" 2>/dev/null; then
-              killed=1
-            fi
-          done
-          if [ "$killed" -eq 1 ]; then
-            echo "[cua-router] stopped listener on port ${PORT}: ${pids}"
-            stopped=1
-          else
-            echo "[cua-router] warning: failed to stop listener on port ${PORT}: ${pids}" >&2
-          fi
-        fi
+      echo "[cua-router] refusing to stop healthy service from another install on ${BASE}" >&2
+      router_identity_summary >&2 || true
+      echo "[cua-router] set CUA_ROUTER_FORCE_TAKEOVER=1 to stop it explicitly" >&2
+      return 2
+    fi
+  else
+    pid="$(read_pid || true)"
+    if [ -n "${pid:-}" ] && ! pid_matches_current_install "$pid"; then
+      if [ "${CUA_ROUTER_FORCE_TAKEOVER:-0}" != "1" ]; then
+        echo "[cua-router] ignoring stale or foreign pid file: ${pid}" >&2
+        pid=""
+      elif ! pid_matches_router "$pid"; then
+        echo "[cua-router] refusing takeover: pid ${pid} is not a cua-router on port ${PORT}" >&2
+        pid=""
       fi
     fi
   fi
 
-  if [ "$stopped" -eq 1 ]; then
-    for _ in 1 2 3 4 5; do
-      health_check || return 0
-      sleep 1
-    done
+  if [ -n "${pid:-}" ] && ! pid_matches_router "$pid"; then
+    echo "[cua-router] refusing to stop pid ${pid}: process identity is not cua-router on port ${PORT}" >&2
+    return 1
   fi
 
+  if [ -n "${pid:-}" ] && pid_alive "$pid" && kill "$pid" 2>/dev/null; then
+    echo "[cua-router] stopping pid=${pid}"
+    stopped=1
+    for _ in 1 2 3 4 5; do
+      pid_alive "$pid" || break
+      sleep 1
+    done
+    if pid_alive "$pid"; then
+      echo "[cua-router] warning: pid ${pid} did not exit after SIGTERM" >&2
+      return 1
+    fi
+    echo "[cua-router] stopped pid=${pid}"
+  fi
+
+  if [ "$stopped" -eq 1 ] || ! health_check; then
+    rm -f "$PID_FILE"
+  fi
+  app_server_stop
   if [ "$stopped" -eq 0 ]; then
     echo "[cua-router] not running"
   fi
@@ -381,6 +561,14 @@ usage() {
 main() {
   cmd="${1:-start}"
   shift || true
+  case "$cmd" in
+    start|stop|restart)
+      acquire_lifecycle_lock
+      trap release_lifecycle_lock EXIT
+      trap 'release_lifecycle_lock; exit 130' INT
+      trap 'release_lifecycle_lock; exit 143' TERM
+      ;;
+  esac
   case "$cmd" in
     start) cmd_start ;;
     stop) cmd_stop ;;

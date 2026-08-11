@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # Record & Replay 录制控制入口。
 #
-# 关键架构：录制（event-stream）必须由 cua-router-basic 的 codex app-server 托管
-# 才能工作——app-server 持有 CUAService 的事件观察者连接，录制事件才有地方串流。
-# 裸 spawn `SkyComputerUseClient event-stream mcp` 会连上服务但永远收不到 XPC 回复
-# （服务无处串流事件而挂起）。因此本脚本只做一件事：确保 cua-router 守护进程在跑，
-# 然后把 start/status/stop 转成对 cua-router `/record` 端点的 HTTP 调用。
+# Shell 与 stdio MCP 两种入口都通过 cua-router 的共享 app-server 会话控制录制，
+# 避免宿主裸 spawn SkyComputerUseClient 绕过可信进程链和事件观察者上下文。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,15 +17,15 @@ usage() {
   cat <<EOF
 Usage: $0 <start|status|stop|mcp>
 
-  start    开始录制（最长 30 分钟）。经 cua-router app-server 驱动，无需系统弹窗。
-  status   查询当前/最近一次录制状态，返回 metadataPath 与 eventsPath。
-  stop     停止录制并返回产物路径（events.jsonl / session.json）。
+  start    通过 cua-router 开始录制。
+  status   通过 cua-router 查询录制状态。
+  stop     通过 cua-router 停止录制并返回产物路径。
   mcp      以 stdio MCP server 暴露 event_stream_start/status/stop。
 
 环境变量：
   CUA_ROUTER_INSTALL_DIR   显式指定 cua-router-basic 根目录
   CUA_ROUTER_PORT          cua-router 监听端口（默认 18901）
-  RECORD_DESK_CODEX_HOME   mcp 模式使用的 CODEX_HOME（默认 cua-router-basic/runtime）
+  CUA_ROUTER_INSTALL_DIR   mcp 代理启动/定位 cua-router 使用的技能目录
 EOF
 }
 
@@ -50,94 +47,23 @@ esac
 
 CUA_ROOT="$(resolve_cua_root "$SKILL_ROOT")"
 
+if [ "$action" != "mcp" ]; then
+  CUA_ROUTER_ENABLE_EVENT_STREAM=1 CUA_ROUTER_START_READINESS=off CUA_ROUTER_HEALTH_MODE=app-server \
+    bash "$CUA_ROOT/scripts/daemon.sh" restart >/dev/null
+  result="$(curl --fail --silent --show-error --max-time 45 \
+    -X POST "$BASE/record" -H 'Content-Type: application/json' \
+    -d "{\"action\":\"$action\"}")"
+  if [ "$action" = "stop" ]; then
+    CUA_ROUTER_ENABLE_EVENT_STREAM=0 CUA_ROUTER_START_READINESS=off CUA_ROUTER_HEALTH_MODE=app-server \
+      bash "$CUA_ROOT/scripts/daemon.sh" restart >/dev/null || true
+  fi
+  printf '%s\n' "$result"
+  exit 0
+fi
+
 if [ "$action" = "mcp" ]; then
-  CLIENT="$(sky_client_bin "$CUA_ROOT")"
-  SERVICE_APP="$CUA_ROOT/vendor/computer-use/Codex Computer Use.app"
-  CODEX_HOME_DIR="${RECORD_DESK_CODEX_HOME:-$CUA_ROOT/runtime}"
-  COMPUTER_USE_LINK="$CODEX_HOME_DIR/computer-use"
-  COMPUTER_USE_TARGET="$CUA_ROOT/vendor/computer-use"
-
-  mkdir -p "$CODEX_HOME_DIR"
-  if [ -L "$COMPUTER_USE_LINK" ]; then
-    if [ "$(readlink "$COMPUTER_USE_LINK")" != "$COMPUTER_USE_TARGET" ]; then
-      rm "$COMPUTER_USE_LINK"
-      ln -s "$COMPUTER_USE_TARGET" "$COMPUTER_USE_LINK"
-    fi
-  elif [ ! -e "$COMPUTER_USE_LINK" ]; then
-    ln -s "$COMPUTER_USE_TARGET" "$COMPUTER_USE_LINK"
-  elif [ ! -d "$COMPUTER_USE_LINK/Codex Computer Use.app" ]; then
-    rdb_die "CODEX_HOME 下已有不可用的 computer-use：$COMPUTER_USE_LINK"
-  fi
-
-  export CODEX_HOME="$CODEX_HOME_DIR"
-  export SKY_CUA_SERVICE_PATH="$SERVICE_APP"
-  exec "$CLIENT" event-stream mcp
+  CUA_ROUTER_ENABLE_EVENT_STREAM=1 CUA_ROUTER_START_READINESS=off CUA_ROUTER_HEALTH_MODE=app-server \
+    bash "$CUA_ROOT/scripts/daemon.sh" restart >/dev/null
+  export RDB_CUA_ROOT="$CUA_ROOT"
+  exec python3 "$SCRIPT_DIR/event-stream-mcp.py"
 fi
-
-router_health_json() {
-  curl -sf "$BASE/health" 2>/dev/null
-}
-
-router_healthy() {
-  router_health_json \
-    | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ready") else 1)'
-}
-
-router_matches_cua_root() {
-  local body
-  body="$(router_health_json)" || return 1
-  python3 - "$CUA_ROOT" "$body" <<'PY'
-import json
-import os
-import sys
-
-expected = os.path.realpath(sys.argv[1])
-try:
-    data = json.loads(sys.argv[2])
-except Exception:
-    sys.exit(1)
-
-actual = data.get("skill_root") or ""
-service = data.get("service") or ""
-if service == "cua-router-basic" and actual and os.path.realpath(actual) == expected:
-    sys.exit(0)
-sys.exit(1)
-PY
-}
-
-# 确保 cua-router 守护进程在跑（其 app-server 托管 event_stream mcp，并已连通 CUAService）。
-if ! router_matches_cua_root; then
-  if router_healthy; then
-    rdb_info "cua-router 已运行但不是当前安装，正在切换到：$CUA_ROOT"
-  else
-    rdb_info "cua-router 未就绪，正在启动守护进程..."
-  fi
-  CUA_ROUTER_HEALTH_MODE=app-server bash "$CUA_ROOT/scripts/daemon.sh" start >&2 \
-    || rdb_die "无法启动 cua-router 守护进程"
-fi
-
-router_matches_cua_root \
-  || rdb_die "cua-router 服务身份校验失败，端口 ${PORT} 仍不是当前安装：$CUA_ROOT"
-
-resp="$(curl -sf -X POST "$BASE/record" \
-  -H 'Content-Type: application/json' \
-  -d "{\"action\":\"$action\"}" 2>/dev/null)" \
-  || rdb_die "调用 cua-router /record 失败（action=$action）"
-
-# 结果是 MCP tool 结果：{ content:[{type:text,text:"<json>"}], isError? }。
-# 抽出内层 text 打印，便于人和 Agent 直接读取 eventsPath/metadataPath/isRecording。
-python3 - "$resp" <<'PY'
-import json, sys
-raw = sys.argv[1]
-try:
-    obj = json.loads(raw)
-except Exception:
-    print(raw); sys.exit(0)
-if obj.get("isError"):
-    texts = [c.get("text", "") for c in obj.get("content", []) if c.get("type") == "text"]
-    sys.stderr.write("[record-desk-basic] 录制调用返回错误：" + " ".join(texts) + "\n")
-    sys.exit(1)
-for c in obj.get("content", []):
-    if c.get("type") == "text":
-        print(c["text"])
-PY

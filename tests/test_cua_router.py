@@ -46,6 +46,39 @@ class VendorPathTests(unittest.TestCase):
     def test_event_stream_shares_app_server_runtime(self):
         self.assertEqual(vendor_paths.event_stream_home(), vendor_paths.RUNTIME)
 
+    def test_runtime_config_omits_event_stream_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_runtime = vendor_paths.RUNTIME
+            old_env = os.environ.pop("CUA_ROUTER_ENABLE_EVENT_STREAM", None)
+            try:
+                vendor_paths.RUNTIME = Path(tmp)
+                config = vendor_paths.write_runtime_config().read_text(encoding="utf-8")
+            finally:
+                vendor_paths.RUNTIME = old_runtime
+                if old_env is not None:
+                    os.environ["CUA_ROUTER_ENABLE_EVENT_STREAM"] = old_env
+
+        self.assertIn("[mcp_servers.node_repl]", config)
+        self.assertNotIn("[mcp_servers.event_stream]", config)
+
+    def test_runtime_config_can_enable_event_stream_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_runtime = vendor_paths.RUNTIME
+            old_env = os.environ.get("CUA_ROUTER_ENABLE_EVENT_STREAM")
+            try:
+                vendor_paths.RUNTIME = Path(tmp)
+                os.environ["CUA_ROUTER_ENABLE_EVENT_STREAM"] = "1"
+                config = vendor_paths.write_runtime_config().read_text(encoding="utf-8")
+            finally:
+                vendor_paths.RUNTIME = old_runtime
+                if old_env is None:
+                    os.environ.pop("CUA_ROUTER_ENABLE_EVENT_STREAM", None)
+                else:
+                    os.environ["CUA_ROUTER_ENABLE_EVENT_STREAM"] = old_env
+
+        self.assertIn("[mcp_servers.node_repl]", config)
+        self.assertIn("[mcp_servers.event_stream]", config)
+
 
 class VendorSetupScriptTests(unittest.TestCase):
     def test_setup_vendor_preserves_notarized_computer_use_app(self):
@@ -82,6 +115,9 @@ class RuntimeResilienceTests(unittest.TestCase):
         script = (SCRIPTS_DIR / "exec.sh").read_text(encoding="utf-8")
 
         self.assertIn('CUA_ROUTER_START_READINESS=off', script)
+        self.assertIn('CUA_ROUTER_EXEC_PREWARM:-auto', script)
+        self.assertIn('grep -qE', script)
+        self.assertIn('bash "$SCRIPT_DIR/daemon.sh" ready', script)
         self.assertIn('CUA_ROUTER_HEALTH_MODE=app-server', script)
         self.assertIn('bash "$SCRIPT_DIR/daemon.sh" start', script)
 
@@ -90,18 +126,116 @@ class RuntimeResilienceTests(unittest.TestCase):
 
         self.assertIn('${CUA_ROUTER_AUTO_RESTART_ON_NOT_READY:-0}', script)
         self.assertNotIn('${CUA_ROUTER_AUTO_RESTART_ON_NOT_READY:-1}', script)
+        self.assertIn('${CUA_ROUTER_START_READINESS:-off}', script)
+
+    def test_daemon_launches_signed_vendor_app_server_via_launchd(self):
+        script = (SCRIPTS_DIR / "daemon.sh").read_text(encoding="utf-8")
+
+        self.assertIn('launchctl bootstrap "gui/$(id -u)" "$plist"', script)
+        self.assertIn('"--ws-auth", "capability-token"', script)
+        self.assertIn('export CUA_ROUTER_APP_SERVER_WS="$APP_SERVER_WS"', script)
+        self.assertNotIn("ChatGPT.app", script)
 
     def test_router_uses_threading_http_server(self):
         self.assertTrue(issubclass(cua_router.RouterHTTPServer, cua_router.ThreadingHTTPServer))
+
+    def test_daemon_reuses_healthy_foreign_install_unless_takeover_is_explicit(self):
+        script = (SCRIPTS_DIR / "daemon.sh").read_text(encoding="utf-8")
+
+        self.assertIn('${CUA_ROUTER_FORCE_TAKEOVER:-0}', script)
+        self.assertIn("reusing healthy service from another install", script)
+        self.assertIn("CUA_ROUTER_FORCE_TAKEOVER=1", script)
+
+    def test_daemon_serializes_lifecycle_commands(self):
+        script = (SCRIPTS_DIR / "daemon.sh").read_text(encoding="utf-8")
+
+        self.assertIn("acquire_lifecycle_lock", script)
+        self.assertIn('shlock -f "$LOCK_FILE" -p $$', script)
+        self.assertIn("release_lifecycle_lock", script)
+        self.assertIn("release_lifecycle_lock; exit 130", script)
+        self.assertIn("release_lifecycle_lock; exit 143", script)
+        self.assertIn('[ "$owner" = "$$" ] && rm -f "$LOCK_FILE"', script)
+
+    def test_daemon_never_kills_foreign_pid_without_takeover(self):
+        script = (SCRIPTS_DIR / "daemon.sh").read_text(encoding="utf-8")
+
+        self.assertIn('pid_matches_current_install "$old_pid"', script)
+        self.assertIn('${CUA_ROUTER_FORCE_TAKEOVER:-0}', script)
+
+    def test_exec_retries_only_connection_failure_once(self):
+        script = (SCRIPTS_DIR / "exec.sh").read_text(encoding="utf-8")
+
+        self.assertIn("request_exec", script)
+        self.assertIn("request_status", script)
+        self.assertIn("REQUEST_NOT_CONNECTED=75", script)
+        self.assertIn("ConnectionRefusedError", script)
+        self.assertIn("socket.timeout", script)
+        self.assertNotIn("for attempt in", script)
+
+    def test_session_close_terminates_child_process(self):
+        class FakeProcess:
+            def __init__(self):
+                self.terminated = False
+                self.waited = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, timeout):
+                self.waited = True
+
+        session = cua_router.AppServerSession()
+        proc = FakeProcess()
+        session._proc = proc
+
+        session.close()
+
+        self.assertTrue(proc.terminated)
+        self.assertTrue(proc.waited)
+        self.assertIsNone(session._proc)
+
+    def test_shutdown_router_closes_session_before_server(self):
+        calls = []
+
+        class FakeSession:
+            def close(self):
+                calls.append("session")
+
+        class FakeServer:
+            def server_close(self):
+                calls.append("server")
+
+        cua_router.shutdown_router(FakeServer(), FakeSession())
+
+        self.assertEqual(calls, ["session", "server"])
+
+
+class RecordDeskEntryPointTests(unittest.TestCase):
+    def test_mcp_mode_uses_router_proxy_instead_of_raw_sky_client(self):
+        script_path = ROOT / "record-desk-basic" / "scripts" / "event-stream.sh"
+        script = script_path.read_text(encoding="utf-8")
+
+        self.assertIn('exec python3 "$SCRIPT_DIR/event-stream-mcp.py"', script)
+        self.assertNotIn('exec "$CLIENT" event-stream mcp', script)
+        self.assertTrue((script_path.parent / "event-stream-mcp.py").exists())
+
+    def test_shell_recording_actions_use_router_fallback(self):
+        script = (ROOT / "record-desk-basic" / "scripts" / "event-stream.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('bash "$CUA_ROOT/scripts/daemon.sh" start', script)
+        self.assertIn('-X POST "$BASE/record"', script)
+        self.assertIn('-d "{\\"action\\":\\"$action\\"}"', script)
+        self.assertNotIn("禁止 shell fallback", script)
 
 
 class RecordDeskResolveRootTests(unittest.TestCase):
     def test_prefers_sibling_cua_router_before_global_automan_install(self):
         resolver = ROOT / "record-desk-basic" / "scripts" / "lib" / "resolve-cua-root.sh"
-        sky_rel = (
-            "vendor/computer-use/Codex Computer Use.app/Contents/SharedSupport/"
-            "SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
-        )
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -111,10 +245,11 @@ class RecordDeskResolveRootTests(unittest.TestCase):
             global_root = tmp_path / ".automan" / "skills" / "cua-router-basic"
 
             for root in (sibling_root, global_root):
-                sky_bin = root / sky_rel
-                sky_bin.parent.mkdir(parents=True, exist_ok=True)
-                sky_bin.write_text("#!/bin/sh\n", encoding="utf-8")
-                sky_bin.chmod(0o755)
+                (root / "scripts").mkdir(parents=True, exist_ok=True)
+                (root / "SKILL.md").write_text("name: cua-router-basic\n", encoding="utf-8")
+                daemon = root / "scripts" / "daemon.sh"
+                daemon.write_text("#!/bin/sh\n", encoding="utf-8")
+                daemon.chmod(0o755)
             rdb_root.mkdir(parents=True)
 
             command = (
@@ -132,6 +267,35 @@ class RecordDeskResolveRootTests(unittest.TestCase):
             )
 
         self.assertEqual(result.stdout, str(sibling_root))
+
+    def test_accepts_slim_cua_router_install_before_vendor_bootstrap(self):
+        resolver = ROOT / "record-desk-basic" / "scripts" / "lib" / "resolve-cua-root.sh"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            rdb_root = tmp_path / "skills" / "record-desk-basic"
+            cua_root = tmp_path / "skills" / "cua-router-basic"
+            rdb_root.mkdir(parents=True)
+            (cua_root / "scripts").mkdir(parents=True)
+            (cua_root / "SKILL.md").write_text("name: cua-router-basic\n", encoding="utf-8")
+            daemon = cua_root / "scripts" / "daemon.sh"
+            daemon.write_text("#!/bin/sh\n", encoding="utf-8")
+            daemon.chmod(0o755)
+
+            command = (
+                f'source "{resolver}"; '
+                f'resolve_cua_root "{rdb_root}"'
+            )
+            result = subprocess.run(
+                ["bash", "-lc", command],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, "HOME": str(tmp_path)},
+            )
+
+        self.assertEqual(result.stdout, str(cua_root))
 
 
 class InstallHelperTests(unittest.TestCase):

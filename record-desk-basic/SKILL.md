@@ -24,23 +24,18 @@ description: >
 - **cua-router-basic**（必需）：提供 `vendor/computer-use/…/SkyComputerUseClient` 与后台 `CUAService` 预热逻辑。安装/定位见 `cua-router-basic` 的 `references/install.md`。
 - 本技能脚本按以下顺序自动定位 cua-router-basic 根目录：`CUA_ROUTER_INSTALL_DIR` → **同级 `cua-router-basic/`（推荐，automan cua-agent profile 布局）** → 本技能父目录（同仓库开发态）→ `~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic` → `~/.automan/skills/cua-router-basic`（旧布局，向后兼容）→ `~/.cursor/skills/cua-router-basic`。
 
-## 架构：优先使用宿主托管的 event-stream MCP
+## 架构：MCP 优先，shell fallback 可用
 
 录制（event-stream）**不能**靠普通 shell 裸 spawn `SkyComputerUseClient event-stream mcp` 驱动。录制服务 `SkyComputerUseService` 是个 GUI 服务，它在等 **codex app-server 的事件观察者连接**来接收录制事件流；没有这条连接，`start` 会连上服务但永远收不到 XPC 回复而挂起（与权限、宿主前台与否无关）。
 
-对齐 Codex 官方 `record-and-replay` 插件时，首选方式是使用宿主已托管的 MCP server：
+对齐 Codex 官方 `record-and-replay` 插件，优先使用宿主已托管的 MCP server：
 
 - server：`user-record-desk-event-stream`（显示名通常为 `record-desk-event-stream`）
 - tools：`event_stream_start` / `event_stream_status` / `event_stream_stop`
 
-调用前必须先用 MCP discovery 检查该 server 是否可用；如果可用，直接调用这些工具。这条路径最接近 Codex app 的官方录制能力，能让录制事件从宿主 app-server 的观察者连接流出。
+调用前必须先用 MCP discovery 检查该 server 是否可用；可用时直接调用对应工具。若 MCP 不可发现、调用报错或超时，可以走 `scripts/event-stream.sh start|status|stop` 作为 shell fallback。fallback 不是另一套录制实现：脚本只会转调 `cua-router /record`，仍由同一个 codex app-server 托管 `event_stream` MCP，禁止裸 spawn `SkyComputerUseClient event-stream mcp`。
 
-如果宿主 MCP 不可用，再使用本技能的 shell fallback：本技能把 event-stream 注册成 **cua-router-basic 的 codex app-server** 的一个 mcp server（`[mcp_servers.event_stream]`），并由 `cua-router` 暴露 `/record` 端点驱动。该路径与 Codex 官方一样由 app-server 托管 event-stream，AX 捕获能力等价。
-
-`scripts/event-stream.sh` 有两种入口：
-
-- `scripts/event-stream.sh mcp`：供插件宿主以 stdio MCP server 方式挂载，直接暴露 `event_stream_*` 工具。
-- `scripts/event-stream.sh <start|status|stop>`：瘦客户端 fallback，确保 `cua-router` 守护进程在跑，再把动作转成对 `/record` 的 HTTP 调用。
+`scripts/event-stream.sh mcp` 供插件宿主以 stdio MCP server 方式挂载并暴露 `event_stream_*` 工具；`start|status|stop` 供 Agent 在宿主 MCP 不可用时兜底调用。
 
 > 完整根因排查、进程栈证据、被证伪的方向与解法见 `references/recording-architecture.md`。
 
@@ -57,22 +52,12 @@ description: >
 
 SkyComputerUseService 在录制期间会监听 App 激活/切换（Dock 点击、Cmd+Tab、直接点窗口），并为新激活的窗口自动发出 `window.changed`，附带完整或 diff 形式的 AX tree。也就是说，**AX 同步发生在用户激活 App 时，由录制服务自动完成，不需要 Agent 在起录前手动 `activate` 或 `ax.get` 预热**。
 
-优先入口：宿主 MCP 工具 `event_stream_start` / `event_stream_status` / `event_stream_stop`。若 MCP discovery 显示 `user-record-desk-event-stream` 不可用，则使用 shell fallback：`scripts/event-stream.sh <start|status|stop>`（内部经 cua-router `/record` 驱动）。
-
-```bash
-SKILL_ROOT="$(cd "$(dirname "$0")" && pwd)"   # 或本技能安装目录
-# 1) 开始录制（秒回，返回 eventsPath / sessionDirectoryPath；屏幕出现录制指示器）
-bash "$SKILL_ROOT/scripts/event-stream.sh" start
-# —— 到此结束本轮，等用户把要录的演示做完 ——
-
-# 2) 用户回来后查状态 / 停止
-bash "$SKILL_ROOT/scripts/event-stream.sh" status
-bash "$SKILL_ROOT/scripts/event-stream.sh" stop
-```
+优先入口：宿主 MCP 工具 `event_stream_start` / `event_stream_status` / `event_stream_stop`。MCP discovery 不可用或调用失败时，允许 fallback 到 `scripts/event-stream.sh start|status|stop`；fallback 必须继续经 `cua-router /record`，不能直接调用底层 Sky client。
 
 规则（与 Codex 官方 `record-and-replay` SKILL 一致）：
 
-- 仅在用户准备好开始录制时调用 `event_stream_start`。**起录前不要求**目标 App 在前台，**不要**让用户先切窗口再回复「好了」。
+- 仅在用户准备好开始录制时调用宿主 MCP `event_stream_start`。**起录前不要求**目标 App 在前台，**不要**让用户先切窗口再回复「好了」。
+- `event_stream_start/status/stop` 任一调用失败或超时后先原样报告；若用户仍要继续录制，或宿主 MCP 根本不可发现，可调用 `event-stream.sh start|status|stop` 作为 fallback。
 - `start` 秒回后**不要** sleep、poll 或循环等待；**不要**用 Computer Use 替用户操作。结束本轮，提示最长 30 分钟，让用户去演示，录完回来告知。
 - 用户演示时正常切换 App 即可（Dock / Cmd+Tab / 点窗口）；录制服务会在激活时自动捕获 `window.changed` 和 AX tree。
 - **同一时刻只允许一个录制**。若 `start` 报告已有活跃录制，不要重启，询问用户是用当前录制还是等它结束。

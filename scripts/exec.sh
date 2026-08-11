@@ -111,6 +111,13 @@ ensure_service() {
     CUA_ROUTER_START_READINESS=off \
       CUA_ROUTER_HEALTH_MODE=app-server \
       bash "$SCRIPT_DIR/daemon.sh" start >/dev/null
+    if [ "${CUA_ROUTER_EXEC_PREWARM:-auto}" != "off" ] \
+      && printf '%s' "$CODE" | grep -qE '\b(ax|sky|atomic)\.'; then
+      # Playback snippets usually need CUAService immediately. Prewarm only for
+      # Computer Use code; recording still starts with readiness off in
+      # record-desk-basic to avoid stealing the event-stream observer.
+      bash "$SCRIPT_DIR/daemon.sh" ready >/dev/null || true
+    fi
   fi
 }
 
@@ -138,8 +145,11 @@ CODE="$(wrap_code_for_repl "$CODE")"
 ensure_service
 maybe_preflight_chrome
 
-RESP="$(python3 - "$EXEC_URL" "$TIMEOUT_MS" "$CODE" <<'PY'
+REQUEST_NOT_CONNECTED=75
+request_exec() {
+  python3 - "$EXEC_URL" "$TIMEOUT_MS" "$CODE" <<'PY'
 import json
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -159,10 +169,33 @@ except urllib.error.HTTPError as exc:
     print(exc.read().decode(), file=sys.stderr)
     raise SystemExit(exc.code)
 except urllib.error.URLError as exc:
-    print(f"[exec] request failed: {exc.reason}", file=sys.stderr)
+    reason = exc.reason
+    if isinstance(reason, ConnectionRefusedError):
+        print(f"[exec] connection refused before request delivery: {reason}", file=sys.stderr)
+        raise SystemExit(75)
+    if isinstance(reason, (socket.timeout, TimeoutError)):
+        print(f"[exec] request timed out; not retrying because delivery is uncertain: {reason}", file=sys.stderr)
+    else:
+        print(f"[exec] request failed; not retrying because delivery is uncertain: {reason}", file=sys.stderr)
     raise SystemExit(1)
 PY
-)"
+}
+
+set +e
+RESP="$(request_exec)"
+request_status=$?
+set -e
+if [ "$request_status" -eq "$REQUEST_NOT_CONNECTED" ] && [ "$ENSURE_START" -eq 1 ]; then
+  echo "[exec] connection failed; ensuring cua-router and retrying once" >&2
+  ensure_service
+  set +e
+  RESP="$(request_exec)"
+  request_status=$?
+  set -e
+fi
+if [ "$request_status" -ne 0 ]; then
+  exit "$request_status"
+fi
 
 if [ "$OUTPUT_MODE" = "json" ]; then
   printf '%s\n' "$RESP"

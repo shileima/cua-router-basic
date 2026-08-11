@@ -204,22 +204,89 @@ lsof -i :18901
 
 ```bash
 tail -100 /tmp/cua-router.log
+tail -100 /tmp/cua-router-app-server-18901.log
+launchctl print "gui/$(id -u)/com.meituan.cua-router.app-server.18901"
+curl -sf http://127.0.0.1:18902/readyz
 ```
 
 关注：
-- `[app-server] starting via bundled codex: /path/to/codex` → codex 找到没
-- `[app-server] ready, threadId=...` → app-server 起来了
-- `[app-server] node_repl ready` → node_repl bootstrap 完成
-- `sky bootstrapped, keys: click,double_click,...` → sky 挂载成功
+- launchd job 是否为 `state = running`。
+- `[app-server] connecting to bundled launchd app-server: ws://127.0.0.1:18902` → router 正在连接签名 app-server。
+- `[app-server] ready, threadId=...` → JSON-RPC 初始化完成。
+- `[app-server] node_repl ready` → MCP server bootstrap 完成。
+
+若卡在 WebSocket 握手：
+- 检查 `<runtime>/app-server.token` 是否存在且权限为 `0600`。
+- 检查 app-server 与 router 的 `CUA_ROUTER_APP_SERVER_PORT` 是否一致。
+- `403 Forbidden` 且日志出现 `rejecting ... Origin header` 时，客户端必须不发送 `Origin`；内置 `WebSocketTransport` 已按此约束实现。
+- `Sec-WebSocket-Accept` 校验必须大小写无关地比较 header，不能把服务端合法大小写当成失败。
 
 若卡在 `[app-server] initialize timeout`：
-- codex 版本不兼容当前 cua-router.py 的 JSON-RPC 协议
-- vendor 缺失（`bash scripts/setup-vendor.sh`）
+- codex 版本可能不兼容当前 `cua-router.py` 的 JSON-RPC 协议。
+- vendor 可能缺失或不完整；重新下载/安装 vendor 后重试。
 
 若卡在 `node_repl ready` 之前：
-- `NODE_REPL_NODE_MODULE_DIRS` 环境未传对；查 vendor/cua_node 结构
+- `NODE_REPL_NODE_MODULE_DIRS` 环境未传对；检查 `vendor/cua_node` 结构。
 
-## 10. 缓存诊断三件套
+## 10. 录制约 35 秒超时
+
+### 典型原因
+
+启动流程自动执行了 deep readiness，`node_repl` 通过 `sky.list_apps()` 抢占 `SkyComputerUseService` 的唯一事件观察者连接。随后 `event_stream_start` 无法获得录制观察者，最终超时。
+
+### 判定与修复
+
+```bash
+# 起录前只做浅健康检查
+curl -s http://127.0.0.1:18901/health | python3 -m json.tool
+
+# 不要在起录前调用 /ready 深探针
+CUA_ROUTER_START_READINESS=off bash scripts/daemon.sh restart
+```
+
+- `daemon.sh` 当前默认 `CUA_ROUTER_START_READINESS=off`。
+- 不要在录制前手工调用 `/ready`、`sky.list_apps()` 或其他 Sky 深探针。
+- 超时重试无效；必须释放旧观察者并按正确顺序重启。
+
+## 11. 录制返回 `Computer Use server error -1743`
+
+### 含义
+
+`-1743` 是 macOS `errAEEventNotPermitted`。在该链路中通常表示 Sky IPC 认为请求来自不可信 relay，而不只是“辅助功能没勾选”。
+
+错误拓扑：
+
+```text
+python cua-router（未签名） → vendor codex（已签名） → Sky client（已签名）
+```
+
+即使两个子进程签名有效，未签名 Python 祖先仍可能触发 `UNTRUSTED_PARENT` 或 `RELAY_WITHOUT_TRUSTED_ANCESTOR`。
+
+### 修复
+
+```bash
+# 必须走 daemon.sh，让 launchd 直接托管签名 vendor codex
+bash scripts/daemon.sh restart
+
+# 验证 app-server 的 launchd job
+launchctl print "gui/$(id -u)/com.meituan.cua-router.app-server.18901"
+
+# 验证真实录制，不以 /health 代替
+bash record-desk-basic/scripts/event-stream.sh start
+bash record-desk-basic/scripts/event-stream.sh status
+bash record-desk-basic/scripts/event-stream.sh stop
+```
+
+禁止以下规避方案：
+
+- 直接运行 `python3 scripts/cua-router.py` 作为录制生产链路。
+- 复用本地 ChatGPT/Codex Desktop app-server 或 `~/.codex/ipc`。
+- 使用要求额外 standalone 安装的 `codex app-server daemon bootstrap`。
+- 仅通过重复授权、超时重试或回退 v0.4.17/v0.4.18 处理。
+
+详细 RCA 见 `record-desk-basic/references/recording-architecture.md`。
+
+## 12. 缓存诊断三件套
 
 任何"结果不对但不知道哪儿错"时先跑：
 
@@ -244,7 +311,7 @@ tail -100 /tmp/cua-router.log
 - refresh 后 `textLen` 与之前差异大 → 确认是陈旧
 - refresh 后依然错 → 不是缓存问题，看 sky 层
 
-## 11. 快速健康检查一条龙
+## 13. 快速健康检查一条龙
 
 新装环境或改动后跑一遍：
 
@@ -254,10 +321,10 @@ SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-$HOME/.automan/claude-code-agents/cua-agen
 # 1. 服务在线
 bash "$SKILL_ROOT/scripts/daemon.sh" status
 
-# 2. 深度探针（sky ↔ CUAService 通）
-curl -s http://127.0.0.1:18901/ready | python3 -m json.tool
+# 2. 浅健康检查；准备录制时不要先跑 /ready 深探针
+curl -s http://127.0.0.1:18901/health | python3 -m json.tool
 
-# 3. ax API 完整
+# 3. ax API 完整（该调用会初始化 Sky；不要紧接着用同一运行态起录）
 bash "$SKILL_ROOT/scripts/exec.sh" \
   'nodeRepl.write("ax=" + typeof ax + ";keys=" + Object.keys(ax).join(","))'
 

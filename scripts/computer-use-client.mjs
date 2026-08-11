@@ -1,10 +1,16 @@
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 const COMPUTER_USE_RUNTIME_KEY = Symbol.for("openai.computer-use.runtime");
 const COMPUTER_USE_AX_CACHE_KEY = Symbol.for("openai.computer-use.ax-cache");
 const COMPUTER_USE_AX_STATS_KEY = Symbol.for("openai.computer-use.ax-stats");
 const COMPUTER_USE_AX_HELPERS_KEY = Symbol.for("openai.computer-use.ax-helpers");
+const COMPUTER_USE_ATOMIC_ACTIONS_KEY = Symbol.for("openai.computer-use.atomic-actions");
+const COMPUTER_USE_CHROME_AX_RECOVERY_KEY = Symbol.for("openai.computer-use.chrome-ax-recovery");
+
+const execFileAsync = promisify(execFile);
 
 function makeStats() {
   return { hits: 0, misses: 0, staleMisses: 0, invalidations: 0, refreshes: 0 };
@@ -295,6 +301,221 @@ export function createAxHelpers(sky) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 原子动作：定位 → 单次交互 → 刷新验证 → 单次结构化输出
+// ─────────────────────────────────────────────────────────────
+
+function normalizeKeywordGroups(value, fieldName, { optional = false } = {}) {
+  if (value == null && optional) return [];
+  const groups = Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? [value]
+    : value;
+  if (
+    !Array.isArray(groups) ||
+    groups.length === 0 ||
+    groups.some(
+      (group) =>
+        !Array.isArray(group) ||
+        group.length === 0 ||
+        group.some((keyword) => typeof keyword !== "string" || keyword.length === 0),
+    )
+  ) {
+    throw new Error(`${fieldName} must be a non-empty keyword group or list of keyword groups`);
+  }
+  return groups;
+}
+
+function locateFirstKeywordGroup(ax, text, groups) {
+  for (const keywords of groups) {
+    const elementIndex = ax.findIdx(text, ...keywords);
+    if (elementIndex != null) return { elementIndex, matchedKeywords: keywords };
+  }
+  return null;
+}
+
+function errorMessage(error) {
+  if (error instanceof Error) return error.message;
+  try {
+    return String(error);
+  } catch {
+    return "Unknown error";
+  }
+}
+
+/**
+ * 创建通用原子动作。每次动作只写一次 JSON，调用方无需手写 nodeRepl.write。
+ * @param {{ sky: object, ax: object, write?: (text: string) => void }} options
+ */
+export function createAtomicActions({ sky, ax, write = null }) {
+  if (sky == null || typeof sky.click !== "function") {
+    throw new Error("createAtomicActions requires sky.click");
+  }
+  if (ax == null || typeof ax.get !== "function" || typeof ax.findIdx !== "function") {
+    throw new Error("createAtomicActions requires AX helpers");
+  }
+
+  const emit = (result) => {
+    const output = JSON.stringify(result);
+    if (typeof write === "function") {
+      write(output);
+    } else {
+      const repl = /** @type {typeof globalThis & { nodeRepl?: { write?: Function } }} */ (globalThis)
+        .nodeRepl;
+      if (typeof repl?.write !== "function") {
+        throw new Error("atomic actions require nodeRepl.write or an explicit write callback");
+      }
+      repl.write(output);
+    }
+    return result;
+  };
+
+  return Object.freeze({
+    /**
+     * @param {{
+     *   app: string,
+     *   target: string[] | string[][],
+     *   verify?: string[] | string[][],
+     *   refreshBefore?: boolean,
+     *   summaryMaxLines?: number,
+     * }} input
+     */
+    async click(input) {
+      const app = input?.app;
+      let targetGroups;
+      let verifyGroups;
+      let summaryOptions;
+      try {
+        if (typeof app !== "string" || app.length === 0) {
+          throw new Error("atomic.click requires an app bundle id string");
+        }
+        targetGroups = normalizeKeywordGroups(input.target, "target");
+        verifyGroups = normalizeKeywordGroups(input.verify, "verify", { optional: true });
+        summaryOptions = { maxLines: input.summaryMaxLines ?? 30 };
+      } catch (error) {
+        return emit({
+          ok: false,
+          operation: "click",
+          app: typeof app === "string" ? app : null,
+          stage: "input",
+          error: { code: "invalid_input", message: errorMessage(error) },
+        });
+      }
+
+      let beforeState;
+      try {
+        beforeState = await ax.get(app, { refresh: input.refreshBefore ?? true });
+      } catch (error) {
+        return emit({
+          ok: false,
+          operation: "click",
+          app,
+          stage: "snapshot",
+          error: { code: "snapshot_failed", message: errorMessage(error) },
+        });
+      }
+
+      let before;
+      let target;
+      try {
+        before = ax.summarize(beforeState, summaryOptions);
+        target = locateFirstKeywordGroup(ax, beforeState.text, targetGroups);
+      } catch (error) {
+        return emit({
+          ok: false,
+          operation: "click",
+          app,
+          stage: "process",
+          error: { code: "ax_processing_failed", message: errorMessage(error) },
+        });
+      }
+      if (target == null) {
+        return emit({
+          ok: false,
+          operation: "click",
+          app,
+          stage: "locate",
+          target: { candidates: targetGroups },
+          before,
+          error: { code: "target_not_found", message: "No target keyword group matched" },
+        });
+      }
+
+      try {
+        await sky.click({ app, element_index: target.elementIndex });
+      } catch (error) {
+        return emit({
+          ok: false,
+          operation: "click",
+          app,
+          stage: "action",
+          target,
+          before,
+          error: { code: "click_failed", message: errorMessage(error) },
+        });
+      }
+
+      let afterState;
+      try {
+        afterState = await ax.get(app, { refresh: true });
+      } catch (error) {
+        return emit({
+          ok: false,
+          operation: "click",
+          app,
+          stage: "verify",
+          target,
+          before,
+          error: { code: "verification_snapshot_failed", message: errorMessage(error) },
+        });
+      }
+
+      let after;
+      let verification;
+      try {
+        after = ax.summarize(afterState, summaryOptions);
+        verification =
+          verifyGroups.length > 0
+            ? locateFirstKeywordGroup(ax, afterState.text, verifyGroups)
+            : { mode: "post_action_snapshot" };
+      } catch (error) {
+        return emit({
+          ok: false,
+          operation: "click",
+          app,
+          stage: "process",
+          target,
+          before,
+          error: { code: "ax_processing_failed", message: errorMessage(error) },
+        });
+      }
+      if (verification == null) {
+        return emit({
+          ok: false,
+          operation: "click",
+          app,
+          stage: "verify",
+          target,
+          verification: { candidates: verifyGroups },
+          before,
+          after,
+          error: { code: "verification_failed", message: "No verification keyword group matched" },
+        });
+      }
+
+      return emit({
+        ok: true,
+        operation: "click",
+        app,
+        stage: "verified",
+        target,
+        verification,
+        before,
+        after,
+      });
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
 // sky client wrapper：normalize press_key + 自动失效 AX 缓存
 // ─────────────────────────────────────────────────────────────
 
@@ -308,6 +529,13 @@ export function wrapSkyClient(sky) {
   const originalPressKey = sky.press_key.bind(sky);
   const originalGetAppState = sky.get_app_state.bind(sky);
 
+  const maybeCacheGetAppState = (input, state) => {
+    if (input && typeof input.app === "string" && input.disableDiff === true) {
+      writeCacheEntry(input.app, state);
+    }
+    return state;
+  };
+
   /** @type {Record<string, Function>} */
   const overrides = {
     press_key(input) {
@@ -320,11 +548,19 @@ export function wrapSkyClient(sky) {
     // 保留原生调用行为；同时在 disableDiff:true 时回填 AX 缓存，
     // 让 sky.get_app_state 与 ax.get 共用同一份快照（带 fetchedAt 时间戳）。
     async get_app_state(input, ...rest) {
-      const state = await originalGetAppState(input, ...rest);
-      if (input && typeof input.app === "string" && input.disableDiff === true) {
-        writeCacheEntry(input.app, state);
+      try {
+        return maybeCacheGetAppState(input, await originalGetAppState(input, ...rest));
+      } catch (error) {
+        if (!shouldRecoverChromeAx(input, error)) {
+          throw error;
+        }
+        invalidateAxCache(input.app);
+        const recovered = await recoverChromeAx(error);
+        if (!recovered) {
+          throw error;
+        }
+        return maybeCacheGetAppState(input, await originalGetAppState(input, ...rest));
       }
-      return state;
     },
   };
 
@@ -337,6 +573,43 @@ export function wrapSkyClient(sky) {
   }
 
   return Object.freeze({ ...sky, ...overrides });
+}
+
+function shouldRecoverChromeAx(input, error) {
+  if (process.env.CUA_ROUTER_CHROME_AX_RECOVERY === "off") return false;
+  if (process.platform !== "darwin") return false;
+  if (input == null || input.app !== "com.google.Chrome") return false;
+
+  const message = errorMessage(error).toLowerCase();
+  return (
+    message.includes("-10005") ||
+    message.includes("timeoutreached") ||
+    message.includes("exited before returning a response")
+  );
+}
+
+async function recoverChromeAx(error) {
+  const override = Reflect.get(globalThis, COMPUTER_USE_CHROME_AX_RECOVERY_KEY);
+  if (typeof override === "function") {
+    return Boolean(await override(error));
+  }
+
+  try {
+    await execFileAsync("/bin/bash", [
+      "-lc",
+      [
+        "osascript -e 'tell application \"Google Chrome\" to quit' >/dev/null 2>&1 || true",
+        "sleep 2",
+        "if pgrep -x 'Google Chrome' >/dev/null 2>&1; then pkill -TERM -x 'Google Chrome' >/dev/null 2>&1 || true; sleep 1; fi",
+        "open -a 'Google Chrome' >/dev/null 2>&1",
+        "sleep 3",
+        "osascript -e 'tell application \"Google Chrome\" to make new window' >/dev/null 2>&1 || true",
+      ].join("; "),
+    ], { timeout: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function importPackagedCreateClient() {
@@ -371,6 +644,7 @@ async function importPackagedCreateClient() {
 
 /** @param {SetupComputerUseRuntimeOptions} [options] */
 export async function setupComputerUseRuntime({ globals = globalThis } = {}) {
+  invalidateAxCache();
   let sky = Reflect.get(globalThis, COMPUTER_USE_RUNTIME_KEY);
   if (sky == null) {
     const createClient = await importPackagedCreateClient();
@@ -380,13 +654,15 @@ export async function setupComputerUseRuntime({ globals = globalThis } = {}) {
   Reflect.set(globalThis, "sky", sky);
   Reflect.set(globals, "sky", sky);
 
-  let ax = Reflect.get(globalThis, COMPUTER_USE_AX_HELPERS_KEY);
-  if (ax == null) {
-    ax = createAxHelpers(sky);
-    Reflect.set(globalThis, COMPUTER_USE_AX_HELPERS_KEY, ax);
-  }
+  const ax = createAxHelpers(sky);
+  Reflect.set(globalThis, COMPUTER_USE_AX_HELPERS_KEY, ax);
   Reflect.set(globalThis, "ax", ax);
   Reflect.set(globals, "ax", ax);
+
+  const atomic = createAtomicActions({ sky, ax });
+  Reflect.set(globalThis, COMPUTER_USE_ATOMIC_ACTIONS_KEY, atomic);
+  Reflect.set(globalThis, "atomic", atomic);
+  Reflect.set(globals, "atomic", atomic);
 
   return sky;
 }

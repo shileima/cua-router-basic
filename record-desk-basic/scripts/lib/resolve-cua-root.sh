@@ -18,10 +18,11 @@ rdb_info() {
 #   4. ~/.automan/claude-code-agents/cua-agent/skills/cua-router-basic（新 automan 布局）
 #   5. ~/.automan/skills/cua-router-basic（旧 automan 布局，向后兼容）
 #   6. ~/.cursor/skills/cua-router-basic（Cursor 安装）
-# 命中条件：该目录存在 vendor/computer-use/.../SkyComputerUseClient。
+# 命中条件：该目录是 cua-router-basic 技能根目录。vendor 可能在首次
+# `daemon.sh start` 时自举下载，因此不能把 SkyComputerUseClient 是否已存在
+# 作为定位前置条件。
 resolve_cua_root() {
   local rdb_root="$1"
-  local sky_rel="vendor/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
   local candidate
 
   local -a candidates=()
@@ -36,13 +37,13 @@ resolve_cua_root() {
 
   for candidate in "${candidates[@]}"; do
     [ -n "$candidate" ] || continue
-    if [ -x "$candidate/$sky_rel" ]; then
+    if [ -f "$candidate/SKILL.md" ] && [ -x "$candidate/scripts/daemon.sh" ]; then
       printf '%s' "$(cd "$candidate" && pwd)"
       return 0
     fi
   done
 
-  rdb_die "找不到 cua-router-basic 的 SkyComputerUseClient 二进制。请先安装 cua-router-basic 并完成 vendor，或设置 CUA_ROUTER_INSTALL_DIR。"
+  rdb_die "找不到 cua-router-basic 技能根目录。请先安装 cua-router-basic，或设置 CUA_ROUTER_INSTALL_DIR。"
 }
 
 sky_client_bin() {

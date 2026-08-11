@@ -141,7 +141,8 @@ def write_runtime_config() -> Path:
     codex_path = str(codex_bin())
     computer_use_path = str(computer_use_app())
     sky_client_path = str(sky_client_bin())
-    es_home = str(ensure_event_stream_home())
+    enable_event_stream = os.environ.get("CUA_ROUTER_ENABLE_EVENT_STREAM", "0") == "1"
+    es_home = str(ensure_event_stream_home()) if enable_event_stream else ""
     sky_sha = sha256_file(sky_client_bin())
 
     # Keep known Chrome plugin hashes for compatibility; append bundled sky client hash.
@@ -152,6 +153,19 @@ def write_runtime_config() -> Path:
             sky_sha,
         ]
     )
+
+    event_stream_config = ""
+    if enable_event_stream:
+        event_stream_config = f'''
+[mcp_servers.event_stream]
+command = "{sky_client_path}"
+args = ["event-stream", "mcp"]
+startup_timeout_sec = 120
+
+[mcp_servers.event_stream.env]
+CODEX_HOME = "{es_home}"
+SKY_CUA_SERVICE_PATH = "{computer_use_path}"
+'''
 
     config_content = f'''ask_for_approval = "never"
 sandbox_mode = "danger-full-access"
@@ -174,16 +188,7 @@ NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "{trusted_hashes}"
 NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
 SKY_CUA_SERVICE_PATH = "{computer_use_path}"
 CODEX_CLI_PATH = "{codex_path}"
-
-[mcp_servers.event_stream]
-command = "{sky_client_path}"
-args = ["event-stream", "mcp"]
-startup_timeout_sec = 120
-
-[mcp_servers.event_stream.env]
-CODEX_HOME = "{es_home}"
-SKY_CUA_SERVICE_PATH = "{computer_use_path}"
-'''
+{event_stream_config}'''
     write_text_if_changed(config_path, config_content)
 
     manifest = {

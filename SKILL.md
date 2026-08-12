@@ -80,6 +80,7 @@ bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" fix      # 手动修复
 | 读取 `/exec` 结果 | `nodeRepl.write(...)` 或 `exec.sh` | 依赖代码块最后一条表达式 |
 | 重复执行 JS | 直接使用 `exec.sh`；`/exec` 自动隔离每次作用域 | 为避免 `already declared` 手工改全局变量 |
 | URL 导航 | 地址栏 `set_value(addrIdx, url)` + `press_key("Return")` | `type_text(url)` |
+| 文本输入（最高优先级） | 目标控件聚焦后用 `pbcopy` 设置剪贴板，再用 `sky.press_key({ app, key: "Command+a" })` + `sky.press_key({ app, key: "Command+v" })`，随后 `ax.get(app, { refresh: true })` 校验 Value/文本/按钮状态 | 优先 `set_value`、`type_text` 或 AppleScript 粘贴后不校验 |
 | 获取 AX Tree | `ax.get(app)`（内部固定 `disableDiff:true` + 缓存自动失效） | 手写 `disableDiff:false`、跨交互复用旧树 |
 | 一段代码内取多次树 | 只调一次 `ax.get(app)`，多次 `ax.findIdx` 复用 `s.text` | 每次 `findIdx` 前都取一次树 |
 | 外部触发（swift / AppleScript / 手动鼠标） | 之后立刻 `ax.get(app, { refresh: true })` 或 `ax.invalidate(app)` | 直接 `ax.get(app)` 拿旧树 |
@@ -87,7 +88,7 @@ bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" fix      # 手动修复
 | 输出到 `nodeRepl.write` | 用 `ax.summarize(s, { keywords, patterns, maxLines })` 或先 `filter + slice` | 回传完整 `s.text` 造成 payload 爆炸 |
 | AX 缺失降级 | AX → hover → OCR → 坐标扫描 | AX 找不到就放弃或只点单个硬编码坐标 |
 | hover 菜单 | 先系统鼠标移动触发 hover，再点菜单热区，最后 `ax.get(app, {refresh:true})` 验证 | 直接点卡片主体或菜单项全程用坐标 |
-| 中文/URL 输入 | 原生输入框优先 `set_value`；不支持 AX 写值的输入区用 shell 级 `pbcopy` + `osascript` 系统粘贴，之后 `ax.get(app, { refresh: true })` | 盲目 `type_text` 或在 AX 写值无效后继续重试 |
+| 中文/URL 输入 | 普通输入/搜索/聊天场景优先稳定粘贴：`pbcopy` + `sky.press_key({ app, key: "Command+a" })` + `sky.press_key({ app, key: "Command+v" })`，之后 `ax.get(app, { refresh: true })` 校验；Chrome 地址栏等明确原生控件可用 `set_value` | 盲目 `type_text`、优先 AppleScript 粘贴、写入后不校验 |
 | 消息发送 | 粘贴后重新取树定位并点击「发送」按钮 | 用 `Return` 代替发送按钮 |
 | Canvas 双击 | `Escape` → 等 600ms → 对节点内文本/图片 `click_count: 2` | `clickCount`、双击 container、坐标双击 |
 | 弹层/对话框 | 操作后 `ax.get(app)` → `ax.findFocusedIdx` → 全文搜索 | 只扫低 idx |

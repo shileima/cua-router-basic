@@ -15,21 +15,35 @@
 
 归一化在 `scripts/computer-use-client.mjs` 的 bootstrap 层完成。修改后需 `daemon.sh restart`。
 
-## set_value、系统级粘贴与 type_text
+## 稳定输入最高优先级：pbcopy + sky.press_key(Command+v)
 
-| | `set_value` | 系统级粘贴 | `type_text` |
+除 Chrome 地址栏导航等明确验证过的原生控件外，所有页面输入框、Electron/WebView 输入框、桌面 IM 输入区、contenteditable、Monaco/CodeMirror、聊天框、搜索框，默认优先使用稳定粘贴闭环：
+
+1. `ax.get(app, { refresh: true })` 重新定位目标输入控件，禁止跨交互复用旧 `element_index`。
+2. `sky.click({ app, element_index })` 聚焦输入控件。
+3. shell 层 `pbcopy` 写入目标文本。
+4. `sky.press_key({ app, key: "Command+a" })` 清空当前内容。
+5. `sky.press_key({ app, key: "Command+v" })` 粘贴。
+6. `ax.get(app, { refresh: true })` 校验目标文本已出现在控件 Value/文本/联想结果中。
+7. 只有校验通过后才允许点击「发送」「搜索」「提交」等动作；发送类动作优先点击按钮，不用 Return 代替。
+
+`set_value` 不再作为普通输入的首选，只适合 Chrome 地址栏、明确原生且写后能校验生效的 input/textarea。AppleScript 粘贴只做最后兜底；若使用 AppleScript，之后必须强制刷新 AX 并校验。
+
+## set_value、稳定粘贴与 type_text
+
+| | `set_value` | 稳定粘贴（首选） | `type_text` |
 |---|---|---|---|
-| 机制 | 通过 Accessibility API 写 AXValue | `pbcopy` 设置剪贴板，再用系统级 `Command+A` / `Command+V` | 模拟键盘逐字输入 |
-| 是否需要 element_index | 需要 | 先聚焦目标控件，不依赖可写 AXValue | 不需要，写当前焦点 |
-| URL / 特殊字符 | 可靠 | 可靠 | 易丢字符 |
-| 中文 / IME | 可靠 | 可靠 | 易异常 |
-| 适用控件 | 原生 input / textarea / 地址栏 | 不支持 AX 写值的编辑器、桌面 IM、contenteditable | 最后兜底 |
+| 机制 | 通过 Accessibility API 写 AXValue | `pbcopy` 设置剪贴板，再用 `sky.press_key({ app, key: "Command+a" })` / `sky.press_key({ app, key: "Command+v" })` | 模拟键盘逐字输入 |
+| 是否需要 element_index | 需要 | 需要先重新定位并聚焦目标控件，不依赖可写 AXValue | 不需要，写当前焦点 |
+| URL / 特殊字符 | 地址栏可靠，其它控件需校验 | 可靠 | 易丢字符 |
+| 中文 / IME | 常被 Web/Electron 受控输入框吞掉或不触发事件 | 可靠 | 易异常 |
+| 适用控件 | Chrome 地址栏、明确原生且可校验生效的 input/textarea | 普通表单、搜索框、聊天框、桌面 IM、contenteditable、Monaco/CodeMirror、Electron/WebView 输入区 | 最后兜底 |
 
 决策规则：
 
-1. Chrome 地址栏导航只用 `set_value + Return`。
-2. 页面普通表单优先 `set_value`。
-3. 目标软件不支持 AX 写值、`set_value` 无效、或控件是 Monaco / CodeMirror / contenteditable / 桌面 IM 输入区时，降级为**系统级粘贴**。
+1. Chrome 地址栏导航可用 `set_value + Return`；如用户明确要求验证粘贴链路，也可用稳定粘贴。
+2. 普通文本输入、搜索、聊天、消息发送场景，最高优先级使用**稳定粘贴**。
+3. `set_value` 只在明确原生控件且写后能通过 AX 校验时使用。
 4. 含 URL、中文、符号的内容禁止 `type_text`。
 5. `type_text` 只做最后兜底，且写入后必须验证。
 
@@ -39,7 +53,7 @@
 |---|---|---|
 | `Description: 地址和搜索栏` | Chrome 地址栏 | 有效 |
 | `文本栏` + Placeholder/Description | 页面原生输入框 | 通常有效 |
-| `文本输入区` / `Description: 编辑器容器` | Monaco、CodeMirror、contenteditable、桌面 IM 输入区 | 通常无效，改用系统级粘贴 |
+| `文本输入区` / `Description: 编辑器容器` | Monaco、CodeMirror、contenteditable、桌面 IM 输入区 | 通常无效，改用稳定粘贴 |
 | `for screen reader` | 隐藏辅助字段 | 跳过 |
 
 地址栏定位：
@@ -56,23 +70,15 @@ const fieldLine = ax
   .find((l) => !/地址|编辑器|screen reader|文本输入区/.test(l));
 ```
 
-## 系统级粘贴示例
+## 稳定粘贴示例
 
-用于 `set_value` 失败或录制显示用户真实键盘输入、但目标软件不支持 AX 写值的场景。关键点：
+用于普通输入、搜索、聊天、`set_value` 失败或录制显示用户真实键盘输入的场景。关键点：
 
-1. 先用 `sky.click` 聚焦输入区。
-2. 在 shell 层用 `pbcopy` 设置剪贴板。
-3. 在 shell 层用 `osascript` 发送系统级 `Command+A` / `Command+V`。
-4. 粘贴是外部系统动作，之后必须 `ax.get(app, { refresh: true })` 或 `ax.invalidate(app)` 再验证。
-
-```js
-{
-  const s1 = await ax.get("cn.neixin.pc");
-  const inputIdx = ax.findIdx(s1.text, "文本输入区", "说点什么");
-  await sky.click({ app: "cn.neixin.pc", element_index: inputIdx });
-  await new Promise((r) => setTimeout(r, 400));
-}
-```
+1. 先用 `ax.get(app, { refresh: true })` 重新定位输入区。
+2. 用 `sky.click` 聚焦输入区。
+3. 在 shell 层用 `pbcopy` 设置剪贴板。
+4. 用 `sky.press_key({ app, key: "Command+a" })` / `sky.press_key({ app, key: "Command+v" })` 执行清空与粘贴。
+5. 粘贴后必须 `ax.get(app, { refresh: true })` 验证。
 
 ```bash
 TEXT="$(cat <<'EOF'
@@ -80,20 +86,25 @@ TEXT="$(cat <<'EOF'
 EOF
 )"
 printf '%s' "$TEXT" | pbcopy
-osascript -e 'tell application "System Events" to keystroke "a" using command down'
-osascript -e 'tell application "System Events" to keystroke "v" using command down'
-```
 
-```js
-{
-  const s2 = await ax.get("cn.neixin.pc", { refresh: true });
-  nodeRepl.write(
-    JSON.stringify({
-      pasted: /要输入的中文|URL/.test(s2.text),
-      sendIdx: ax.findIdx(s2.text, "发送"),
-    }),
-  );
-}
+bash "$SKILL_ROOT/scripts/exec.sh" -t 60000 '{
+  const app = "cn.neixin.pc";
+  const expected = "要输入的中文、URL 或多行文本";
+  let s = await ax.get(app, { refresh: true });
+  const inputIdx = ax.findIdx(s.text, "文本输入区", "说点什么") || ax.findIdx(s.text, "文本栏", "搜索");
+  if (!inputIdx) throw new Error("未找到输入控件");
+  await sky.click({ app, element_index: inputIdx });
+  await new Promise((r) => setTimeout(r, 300));
+  await sky.press_key({ app, key: "Command+a" });
+  await sky.press_key({ app, key: "Command+v" });
+  await new Promise((r) => setTimeout(r, 500));
+  s = await ax.get(app, { refresh: true });
+  nodeRepl.write(JSON.stringify({
+    pasted: s.text.includes(expected),
+    focused: ax.findFocusedIdx(s.text),
+    sendIdx: ax.findIdx(s.text, "发送"),
+  }));
+}'
 ```
 
 消息发送类场景不要用 `Return` 代替发送。粘贴后重新取树定位「发送」按钮，再 `sky.click({ app, element_index: sendIdx })` 并用 `{ refresh: true }` 校验发送结果。

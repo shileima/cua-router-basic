@@ -121,6 +121,24 @@ ensure_service() {
   fi
 }
 
+maybe_request_permissions() {
+  if ! printf '%s' "$CODE" | grep -qE '\b(ax|sky|atomic)\.'; then
+    return 0
+  fi
+  if [ "${CUA_ROUTER_PERMISSION_PROMPT:-auto}" = "off" ]; then
+    return 0
+  fi
+  if [ ! -f "$SCRIPT_DIR/lib/request-permissions.sh" ]; then
+    return 0
+  fi
+  # shellcheck source=lib/request-permissions.sh
+  source "$SCRIPT_DIR/lib/request-permissions.sh"
+  cua_request_permissions_if_needed "${CUA_ROUTER_PERMISSION_PROMPT:-auto}" || {
+    echo "[exec] Computer Use permissions required; run: bash $SCRIPT_DIR/daemon.sh authorize" >&2
+    exit 1
+  }
+}
+
 maybe_preflight_chrome() {
   if ! printf '%s' "$CODE" | grep -qE 'com\.google\.Chrome|["'\''`]Google Chrome["'\''`]'; then
     return 0
@@ -143,6 +161,7 @@ fi
 CODE="$(wrap_code_for_repl "$CODE")"
 
 ensure_service
+maybe_request_permissions
 maybe_preflight_chrome
 
 REQUEST_NOT_CONNECTED=75

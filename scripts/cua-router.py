@@ -405,9 +405,9 @@ class AppServerSession:
         stream events), so we always route through this app-server session.
         """
         try:
-            # The router can outlive install/sync steps that rewrite the skill
-            # directory. Repair CODEX_HOME/computer-use before event-stream
-            # resolves "Codex Computer Use.app" from that runtime location.
+            # Recording requires event_stream in app-server config.toml; callers
+            # should restart daemon with CUA_ROUTER_ENABLE_EVENT_STREAM=1 first.
+            os.environ["CUA_ROUTER_ENABLE_EVENT_STREAM"] = "1"
             write_runtime_config()
         except Exception as exc:  # noqa: BLE001 - surfaced to /record callers
             return {
@@ -426,7 +426,22 @@ class AppServerSession:
         }, timeout=timeout_ms / 1000 + 5)
         if r is None:
             return {"content": [{"type": "text", "text": "timeout"}], "isError": True}
-        return r.get("result", {"content": [{"type": "text", "text": "no result"}], "isError": True})
+        result = r.get("result", {"content": [{"type": "text", "text": "no result"}], "isError": True})
+        text = _content_text(result)
+        if text.strip() == "no result":
+            config_path = RUNTIME / "config.toml"
+            has_es = (
+                config_path.exists()
+                and "[mcp_servers.event_stream]" in config_path.read_text(encoding="utf-8")
+            )
+            hint = (
+                "event_stream MCP 未加载。请先执行："
+                "CUA_ROUTER_ENABLE_EVENT_STREAM=1 bash \"$SKILL_ROOT/scripts/daemon.sh\" restart"
+            )
+            if not has_es:
+                hint += "（runtime/config.toml 缺少 event_stream 段）"
+            return {"content": [{"type": "text", "text": hint}], "isError": True}
+        return result
 
 
 _session = AppServerSession()

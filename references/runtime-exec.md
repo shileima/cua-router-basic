@@ -12,6 +12,14 @@ bash "$SKILL_ROOT/scripts/daemon.sh" start
 bash "$SKILL_ROOT/scripts/daemon.sh" status
 bash "$SKILL_ROOT/scripts/daemon.sh" restart
 bash "$SKILL_ROOT/scripts/daemon.sh" stop
+bash "$SKILL_ROOT/scripts/daemon.sh" authorize   # 前台唤起 Enable ChatGPT Computer Use 授权窗
+bash "$SKILL_ROOT/scripts/exec.sh" 'nodeRepl.write("ok")'
+```
+
+automan / cua-agent 推荐一行入口：
+
+```bash
+bash "$SKILL_ROOT/scripts/ensure-ready.sh"
 ```
 
 健康检查：
@@ -21,6 +29,39 @@ bash "$SKILL_ROOT/scripts/exec.sh" 'nodeRepl.write("ok")'
 ```
 
 输出 `ok` 表示在线。
+
+## Computer Use 授权弹窗（automan / 首次使用）
+
+ChatGPT Desktop 首次启用 Computer Use 时会弹出 **Enable ChatGPT Computer Use**（辅助功能 + 屏幕录制）。  
+cua-router 默认用 `open -g` 后台预热 CUAService，**不会**自动出现该窗口。
+
+首次执行涉及 `sky.*` / `ax.*` 的 `exec.sh`，或 `daemon.sh` 深探针失败时，会自动前台打开 vendor 内的授权安装器：
+
+```bash
+bash "$SKILL_ROOT/scripts/daemon.sh" authorize
+# 等价
+bash "$SKILL_ROOT/scripts/lib/request-permissions.sh"
+```
+
+手动仅打开弹窗、不等待：
+
+```bash
+bash "$SKILL_ROOT/scripts/lib/request-permissions.sh" open
+```
+
+检查是否已授权：
+
+```bash
+bash "$SKILL_ROOT/scripts/lib/request-permissions.sh" check
+```
+
+`CUA_ROUTER_PERMISSION_PROMPT`：
+
+| 值 | 行为 |
+|---|---|
+| `auto` | `exec.sh` / `daemon.sh` 默认；缺权限时弹窗并等待用户点 Allow |
+| `force` | 总是唤起授权窗口 |
+| `off` | 跳过（仅适合已授权环境） |
 
 ## Chrome 预检（Playwright 干扰）
 

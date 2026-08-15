@@ -16,6 +16,7 @@
 | `already declared: sky` / `Identifier ... has already been declared` | node_repl 作用域污染 | wrap_js_for_repl 逻辑异常（应自动包 `{}`） |
 | `[cua-router] not running` 后紧接 start 失败 | HTTP 端口占用 | 18901 端口冲突 |
 | `daemon.sh start` 卡住 | node_repl 未 ready | vendor 缺失、codex 版本错 |
+| Automan/Cursor 沙箱报 `/tmp` 锁文件写入失败 | 默认 pid/log/lock 在 `/tmp` | 已改为 `$SKILL_ROOT/runtime/`；或执行 `/sandbox` 放开限制 |
 
 ## 1. `ax is undefined` 或功能缺失
 
@@ -139,7 +140,7 @@ curl -s -X POST http://127.0.0.1:18901/ready -H 'Content-Type: application/json'
 ### 修复
 
 - socket 不存在 / 服务未启：打开 `Codex Computer Use.app` 手动运行一次，让它注册 CUAService；或系统重启
-- 权限不足：设置里勾选辅助功能 + 屏幕录制
+- 权限不足：优先 `bash "$SKILL_ROOT/scripts/daemon.sh" authorize` 唤起 **Enable ChatGPT Computer Use** 弹窗；或到系统设置里勾选辅助功能 + 屏幕录制
 - vendor sha256 不匹配：`bash scripts/setup-vendor.sh` 重新提取
 
 ## 6. `element_index` 点错 / 点空
@@ -203,8 +204,9 @@ lsof -i :18901
 ### 排查
 
 ```bash
-tail -100 /tmp/cua-router.log
-tail -100 /tmp/cua-router-app-server-18901.log
+SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-$HOME/.automan/claude-code-agents/cua-agent/skills/cua-router-basic}"
+tail -100 "$SKILL_ROOT/runtime/cua-router.log"
+tail -100 "$SKILL_ROOT/runtime/cua-router-app-server-18901.log"
 launchctl print "gui/$(id -u)/com.meituan.cua-router.app-server.18901"
 curl -sf http://127.0.0.1:18902/readyz
 ```

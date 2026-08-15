@@ -8,15 +8,15 @@ SKILL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd -P)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 PORT="${CUA_ROUTER_PORT:-18901}"
-PID_FILE="${CUA_ROUTER_PID_FILE:-/tmp/cua-router.pid}"
-LOG_FILE="${CUA_ROUTER_LOG_FILE:-/tmp/cua-router.log}"
-LOCK_FILE="${CUA_ROUTER_LOCK_FILE:-/tmp/cua-router-${PORT}.lock}"
+PID_FILE=""
+LOG_FILE=""
+LOCK_FILE=""
 BASE="http://localhost:${PORT}"
 LOCK_HELD=0
 APP_SERVER_PORT="${CUA_ROUTER_APP_SERVER_PORT:-$((PORT + 1))}"
 APP_SERVER_WS="ws://127.0.0.1:${APP_SERVER_PORT}"
 APP_SERVER_LABEL="com.meituan.cua-router.app-server.${PORT}"
-APP_SERVER_LOG="${CUA_ROUTER_APP_SERVER_LOG:-/tmp/cua-router-app-server-${PORT}.log}"
+APP_SERVER_LOG=""
 
 CUA_SERVICE_BUNDLE_ID="${CUA_SERVICE_BUNDLE_ID:-com.openai.sky.CUAService}"
 CUA_SERVICE_SOCKET="${CUA_SERVICE_SOCKET:-$HOME/Library/Group Containers/2DC432GLL2.com.openai.sky.CUAService/IPC/computeruse.sock}"
@@ -42,6 +42,18 @@ cua_runtime_dir() {
 export_cua_runtime_dir() {
   CUA_ROUTER_RUNTIME_DIR="$(cua_runtime_dir)"
   export CUA_ROUTER_RUNTIME_DIR
+}
+
+# Automan / Cursor sandbox often blocks writes under /tmp. Keep pid/log/lock
+# under the skill runtime directory (usually ~/.automan/.../runtime), which stays writable.
+init_cua_state_paths() {
+  export_cua_runtime_dir
+  local state_dir="$CUA_ROUTER_RUNTIME_DIR"
+  mkdir -p "$state_dir" 2>/dev/null || true
+  PID_FILE="${CUA_ROUTER_PID_FILE:-$state_dir/cua-router.pid}"
+  LOG_FILE="${CUA_ROUTER_LOG_FILE:-$state_dir/cua-router.log}"
+  LOCK_FILE="${CUA_ROUTER_LOCK_FILE:-$state_dir/cua-router-${PORT}.lock}"
+  APP_SERVER_LOG="${CUA_ROUTER_APP_SERVER_LOG:-$state_dir/cua-router-app-server-${PORT}.log}"
 }
 
 router_health_json() {
@@ -257,7 +269,15 @@ cua_preflight_chrome_warn() {
   CUA_ROUTER_CHROME_PREFLIGHT=warn cua_preflight_chrome warn || true
 }
 
-# 浅探活通过后调用：Chrome 预检 + 预热 CUAService + 深就绪校验。
+cua_request_permissions() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  [ -f "$SCRIPT_DIR/lib/request-permissions.sh" ] || return 0
+  # shellcheck source=lib/request-permissions.sh
+  source "$SCRIPT_DIR/lib/request-permissions.sh"
+  cua_request_permissions_if_needed "${CUA_ROUTER_PERMISSION_PROMPT:-auto}"
+}
+
+# 浅探活通过后调用：权限引导 + Chrome 预检 + 预热 CUAService + 深就绪校验。
 cua_finalize_ready() {
   cua_preflight_chrome_warn
 
@@ -266,7 +286,11 @@ cua_finalize_ready() {
     return 0
   fi
 
-  echo "[cua-router] cua readiness: 未就绪，正在预热 CUAService(${CUA_SERVICE_BUNDLE_ID})..." >&2
+  echo "[cua-router] cua readiness: 未就绪，正在检查 Computer Use 授权..." >&2
+  cua_request_permissions \
+    || echo "[cua-router] warning: Computer Use 授权未完成；可执行 'bash $0 authorize' 重新唤起授权窗口" >&2
+
+  echo "[cua-router] cua readiness: 正在预热 CUAService(${CUA_SERVICE_BUNDLE_ID})..." >&2
   cua_service_ensure 1 \
     || echo "[cua-router] warning: 等待 ${CUA_SERVICE_WAIT_SECS}s 后 CUAService socket 仍未出现" >&2
 
@@ -328,8 +352,23 @@ with open(plist, "wb") as handle:
     plistlib.dump(payload, handle)
 PY
 
+  if curl -sf "http://127.0.0.1:${APP_SERVER_PORT}/readyz" >/dev/null 2>&1; then
+    export CUA_ROUTER_APP_SERVER_WS="$APP_SERVER_WS"
+    export CUA_ROUTER_APP_SERVER_TOKEN_FILE="$token_file"
+    return 0
+  fi
+
   launchctl bootout "gui/$(id -u)/$APP_SERVER_LABEL" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$(id -u)" "$plist"
+  if ! launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null; then
+    # Concurrent daemon starts can race here; accept an already-healthy app-server.
+    if curl -sf "http://127.0.0.1:${APP_SERVER_PORT}/readyz" >/dev/null 2>&1; then
+      export CUA_ROUTER_APP_SERVER_WS="$APP_SERVER_WS"
+      export CUA_ROUTER_APP_SERVER_TOKEN_FILE="$token_file"
+      return 0
+    fi
+    echo "[cua-router] launchctl bootstrap failed for ${APP_SERVER_LABEL}" >&2
+    return 1
+  fi
   for _ in $(seq 1 20); do
     if curl -sf "http://127.0.0.1:${APP_SERVER_PORT}/readyz" >/dev/null 2>&1; then
       export CUA_ROUTER_APP_SERVER_WS="$APP_SERVER_WS"
@@ -554,11 +593,24 @@ cmd_restart() {
   cmd_start
 }
 
+# 前台唤起 vendor 授权安装器，让用户在 GUI 中点击 Allow。
+cmd_authorize() {
+  if ! health_check; then
+    echo "[cua-router] starting router before authorization prompt..." >&2
+    cmd_start
+  fi
+  cua_request_permissions || {
+    echo "[cua-router] authorization not completed; reason=$(bash "$SCRIPT_DIR/lib/request-permissions.sh" check 2>&1 || true)" >&2
+    return 1
+  }
+}
+
 usage() {
-  echo "Usage: $0 {start|stop|status [--deep]|ready|restart}" >&2
+  echo "Usage: $0 {start|stop|status [--deep]|ready|authorize|restart}" >&2
 }
 
 main() {
+  init_cua_state_paths
   cmd="${1:-start}"
   shift || true
   case "$cmd" in
@@ -574,6 +626,7 @@ main() {
     stop) cmd_stop ;;
     status) cmd_status "$@" ;;
     ready) cmd_ready ;;
+    authorize) cmd_authorize ;;
     restart) cmd_restart ;;
     *) usage; exit 1 ;;
   esac

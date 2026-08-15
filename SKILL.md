@@ -47,8 +47,17 @@ SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-${HOME}/.automan/claude-code-agents/cua-ag
 [ -f "$SKILL_ROOT/SKILL.md" ] || SKILL_ROOT="${HOME}/.automan/skills/cua-router-basic"
 [ -f "$SKILL_ROOT/SKILL.md" ] || SKILL_ROOT="${HOME}/.cursor/skills/cua-router-basic"
 bash "$SKILL_ROOT/scripts/daemon.sh" start
+bash "$SKILL_ROOT/scripts/daemon.sh" authorize   # 前台唤起 Enable ChatGPT Computer Use 授权窗
 bash "$SKILL_ROOT/scripts/exec.sh" 'nodeRepl.write("ok")'
 ```
+
+首次在本机使用 Computer Use（读 AX 树 / 操控 Chrome）前，若系统尚未授权，会自动前台弹出 **Enable ChatGPT Computer Use** 窗口；也可手动执行：
+
+```bash
+bash "$SKILL_ROOT/scripts/daemon.sh" authorize
+```
+
+环境变量 `CUA_ROUTER_PERMISSION_PROMPT`：`auto`（默认，缺权限时弹窗）、`force`（总是弹窗）、`off`（跳过，仅适合已授权环境）。
 
 输出 `ok` 后才继续调用 `sky.*`。
 

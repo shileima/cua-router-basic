@@ -57,26 +57,43 @@ init_cua_state_paths() {
 }
 
 router_health_json() {
-  curl -sf "$BASE/health" 2>/dev/null
+  curl -sf "$BASE/health" 2>/dev/null || true
+}
+
+# 读取受保护端点（/exec、/record）所需的 capability token。/health、/ready 探活放行，无需 token。
+cua_read_token() {
+  local f="${CUA_ROUTER_APP_SERVER_TOKEN_FILE:-}"
+  if [ -z "$f" ]; then
+    f="${CUA_ROUTER_RUNTIME_DIR:-$SKILL_ROOT/runtime}/app-server.token"
+  fi
+  [ -f "$f" ] && cat "$f" 2>/dev/null || true
 }
 
 # 浅探针（liveness）：仅验证 HTTP + app-server + node_repl 能跑 JS。
 health_check() {
   if [ "${CUA_ROUTER_HEALTH_MODE:-exec}" = "app-server" ]; then
-    router_health_json \
+    local hj
+    hj="$(router_health_json)"
+    [ -n "$hj" ] || return 1
+    printf '%s' "$hj" \
       | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ready") else 1)'
     return $?
   fi
 
+  # /exec 受 token 保护，探活时也需带上。
+  local token token_header=()
+  token="$(cua_read_token)"
+  [ -n "$token" ] && token_header=(-H "X-CUA-Token: $token")
   curl -sf -X POST "$BASE/exec" \
-    -H 'Content-Type: application/json' \
+    -H 'Content-Type: application/json' "${token_header[@]}" \
     -d '{"code":"nodeRepl.write(\"ok\")","timeout_ms":8000}' \
     2>/dev/null | grep -qE '"text"[[:space:]]*:[[:space:]]*"ok"'
 }
 
 router_identity_matches_current() {
   local body
-  body="$(router_health_json)" || return 1
+  body="$(router_health_json)"
+  [ -n "$body" ] || return 1
   python3 - "$SKILL_ROOT" "$body" <<'PY'
 import json
 import os
@@ -98,7 +115,8 @@ PY
 
 router_is_cua_service() {
   local body
-  body="$(router_health_json)" || return 1
+  body="$(router_health_json)"
+  [ -n "$body" ] || return 1
   python3 - "$body" <<'PY'
 import json
 import sys
@@ -113,7 +131,8 @@ PY
 
 active_router_pid() {
   local body
-  body="$(router_health_json)" || return 1
+  body="$(router_health_json)"
+  [ -n "$body" ] || return 1
   python3 - "$body" <<'PY'
 import json
 import sys

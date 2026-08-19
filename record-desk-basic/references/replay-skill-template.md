@@ -53,7 +53,7 @@ description: >
 |---|---|
 | 点击某按钮（有 AX target） | `ax.findIdx(s.text, "<按钮文案>")` → `sky.click({ app, x, y })` |
 | 在原生输入框/地址栏输入文本或 URL | `sky.set_value({ app, element_index: idx, value })` +（地址栏导航时）`press_key("Return")` |
-| 在不支持 AX 写值的输入区输入文本 | 聚焦输入区 → shell `pbcopy` 写剪贴板 → shell `osascript` 系统级 `Command+A` / `Command+V` → `ax.get(app, { refresh: true })` 校验 |
+| 在不支持 AX 写值的输入区输入文本 | 聚焦输入区 → shell `/usr/bin/pbcopy` 写剪贴板（绝对路径，`pbcopy 不可用` 时见 `cua-router-basic` 的 `references/input-keyboard.md` 兜底章节）→ shell `/usr/bin/osascript` 系统级 `Command+A` / `Command+V` → `ax.get(app, { refresh: true })` 校验 |
 | 发送消息 | 粘贴后重新取树定位「发送」按钮 → `sky.click({ app, element_index: sendIdx })`；不要用 `Return` 代替 |
 | hover 后才出现的菜单 | 先 swift 移动鼠标触发 hover，再点热区（cua-router-basic `references/hover-menu.md`） |
 | Canvas / React Flow 双击 | `Escape` → 等 600ms → 对节点内文本 `click_count: 2`（`references/canvas-double-click.md`） |
@@ -71,9 +71,9 @@ TEXT="$(cat <<'EOF'
 <来自输入参数的文本>
 EOF
 )"
-printf '%s' "$TEXT" | pbcopy
-osascript -e 'tell application "System Events" to keystroke "a" using command down'
-osascript -e 'tell application "System Events" to keystroke "v" using command down'
+printf '%s' "$TEXT" | /usr/bin/pbcopy
+/usr/bin/osascript -e 'tell application "System Events" to keystroke "a" using command down'
+/usr/bin/osascript -e 'tell application "System Events" to keystroke "v" using command down'
 ```
 
 ```js

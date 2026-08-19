@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.request
 import subprocess
 from typing import Any
 
@@ -39,12 +40,41 @@ def send(message: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def _token_file() -> str:
+    """Resolve the capability token file for the protected /record endpoint."""
+    explicit = os.environ.get("CUA_ROUTER_APP_SERVER_TOKEN_FILE")
+    if explicit:
+        return explicit
+    runtime = os.environ.get("CUA_ROUTER_RUNTIME_DIR")
+    if not runtime:
+        cua_root = os.environ.get("RDB_CUA_ROOT")
+        candidate = os.path.join(cua_root, "runtime") if cua_root else ""
+        if candidate and os.path.isfile(os.path.join(candidate, "app-server.token")):
+            runtime = candidate
+        else:
+            uid = os.getuid() if hasattr(os, "getuid") else os.environ.get("USER", "")
+            runtime = f"/tmp/cua-router-basic-runtime-{uid}"
+    return os.path.join(runtime, "app-server.token")
+
+
+def _read_token() -> str:
+    try:
+        with open(_token_file(), encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
 def call_router(action: str) -> dict[str, Any]:
     body = json.dumps({"action": action}).encode()
+    headers = {"Content-Type": "application/json"}
+    token = _read_token()
+    if token:
+        headers["X-CUA-Token"] = token
     request = urllib.request.Request(
         f"{BASE}/record",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:

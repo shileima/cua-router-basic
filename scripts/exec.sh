@@ -7,6 +7,31 @@ SKILL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PORT="${CUA_ROUTER_PORT:-18901}"
 EXEC_URL="http://127.0.0.1:${PORT}/exec"
 
+# Resolve the capability token file used by the protected /exec endpoint.
+# Priority: explicit token file → runtime dir override → default runtime →
+# /tmp fallback (mirrors daemon.sh cua_runtime_dir()).
+cua_token_file() {
+  if [ -n "${CUA_ROUTER_APP_SERVER_TOKEN_FILE:-}" ]; then
+    printf '%s' "$CUA_ROUTER_APP_SERVER_TOKEN_FILE"
+    return 0
+  fi
+  local runtime="${CUA_ROUTER_RUNTIME_DIR:-}"
+  if [ -z "$runtime" ]; then
+    if [ -f "$SKILL_ROOT/runtime/app-server.token" ]; then
+      runtime="$SKILL_ROOT/runtime"
+    else
+      runtime="/tmp/cua-router-basic-runtime-$(id -u 2>/dev/null || printf '%s' "$USER")"
+    fi
+  fi
+  printf '%s/app-server.token' "$runtime"
+}
+
+cua_read_token() {
+  local f
+  f="$(cua_token_file)"
+  [ -f "$f" ] && cat "$f" 2>/dev/null || true
+}
+
 TIMEOUT_MS=30000
 OUTPUT_MODE="text"
 ENSURE_START=1
@@ -166,19 +191,26 @@ maybe_preflight_chrome
 
 REQUEST_NOT_CONNECTED=75
 request_exec() {
-  python3 - "$EXEC_URL" "$TIMEOUT_MS" "$CODE" <<'PY'
+  # Read the token fresh on each request so a daemon restart that rotates the
+  # token does not strand a cached value.
+  local token
+  token="$(cua_read_token)"
+  python3 - "$EXEC_URL" "$TIMEOUT_MS" "$CODE" "$token" <<'PY'
 import json
 import socket
 import sys
 import urllib.error
 import urllib.request
 
-url, timeout_ms, code = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+url, timeout_ms, code, token = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
 payload = json.dumps({"code": code, "timeout_ms": timeout_ms}).encode()
+headers = {"Content-Type": "application/json"}
+if token:
+    headers["X-CUA-Token"] = token
 req = urllib.request.Request(
     url,
     data=payload,
-    headers={"Content-Type": "application/json"},
+    headers=headers,
     method="POST",
 )
 try:

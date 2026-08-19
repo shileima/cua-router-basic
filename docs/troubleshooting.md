@@ -17,6 +17,8 @@
 | `[cua-router] not running` 后紧接 start 失败 | HTTP 端口占用 | 18901 端口冲突 |
 | `daemon.sh start` 卡住 | node_repl 未 ready | vendor 缺失、codex 版本错 |
 | Automan/Cursor 沙箱报 `/tmp` 锁文件写入失败 | 默认 pid/log/lock 在 `/tmp` | 已改为 `$SKILL_ROOT/runtime/`；或执行 `/sandbox` 放开限制 |
+| 录制返回 `-10013: version mismatch` | vendor CUA 二进制与系统 CUAService 版本不一致 | 更新 vendor computer-use 到与系统 `~/.codex` 一致的版本 |
+| 录制返回 `-1743` 或超时，且 ChatGPT Desktop 正在运行 | ChatGPT app-server 抢占事件观察者 | 杀掉 ChatGPT 持有的 `SkyComputerUseClient event-stream mcp`，重启 cua-router |
 
 ## 1. `ax is undefined` 或功能缺失
 
@@ -287,6 +289,89 @@ bash record-desk-basic/scripts/event-stream.sh stop
 - 仅通过重复授权、超时重试或回退 v0.4.17/v0.4.18 处理。
 
 详细 RCA 见 `record-desk-basic/references/recording-architecture.md`。
+
+## 11a. 录制返回 `Computer Use server error -10013: version mismatch`
+
+### 含义
+
+`-10013` 表示 `SkyComputerUseClient`（由 app-server 启动）与系统中运行的 `CUAService` 版本不兼容。这通常发生在 vendor 目录中的 CUA 二进制版本滞后于系统安装。
+
+### 判定
+
+```bash
+# 系统版本（~/.codex 由 ChatGPT.app 自动更新）
+defaults read "~/.codex/computer-use/Codex Computer Use.app/Contents/Info.plist" CFBundleShortVersionString
+
+# Vendor 版本
+defaults read "$SKILL_ROOT/vendor/computer-use/Codex Computer Use.app/Contents/Info.plist" CFBundleShortVersionString
+```
+
+两值不同 → **版本不匹配**。
+
+### 修复
+
+```bash
+# 方法 1：将系统较新版本复制到 vendor（推荐）
+rm -rf "$SKILL_ROOT/vendor/computer-use/Codex Computer Use.app"
+cp -R "~/.codex/computer-use/Codex Computer Use.app" \
+     "$SKILL_ROOT/vendor/computer-use/Codex Computer Use.app"
+
+# 方法 2：重新运行 vendor 安装（如果 setup-vendor.sh 已更新到最新版本）
+bash scripts/setup-vendor.sh
+
+# 修复后重启
+event-stream.sh start  # 会自动 restart daemon
+```
+
+### 预防
+
+- vendor 目录中的 CUA 二进制需要与系统 `~/.codex/computer-use/` 保持版本同步。
+- ChatGPT.app 自动更新时会升级 `~/.codex` 下的 CUA，但不会更新 vendor 目录。
+- 定期检查版本一致性，或在 `setup-vendor.sh` 中增加版本校验。
+
+## 11b. ChatGPT Desktop 抢占事件观察者
+
+### 现象
+
+- 录制返回 `-1743` 或超时，且 `/Applications/ChatGPT.app` 正在运行。
+- `ps aux | grep 'SkyComputerUseClient event-stream'` 显示进程的父 PID 属于 ChatGPT 的 app-server，而非 cua-router 的 launchd app-server。
+
+### 原因
+
+`CUAService` 的事件观察者是**单例**——同一时刻只有一个 `SkyComputerUseClient event-stream mcp` 能持有观察者连接。ChatGPT Desktop 的 app-server 会在启动时自动拉起一个 `event-stream mcp` 客户端，抢占该连接。随后 cua-router 的 app-server 启动的 event-stream 客户端连接成功但永远收不到事件，导致录制超时或返回 `-1743`。
+
+### 判定
+
+```bash
+# 找到所有 event-stream mcp 进程
+ps aux | grep 'SkyComputerUseClient event-stream' | grep -v grep
+
+# 检查其父进程
+ES_PID=$(ps aux | grep 'SkyComputerUseClient event-stream' | grep -v grep | awk '{print $2}' | head -1)
+ps -o ppid,pid,command -p $(ps -o ppid= -p $ES_PID | tr -d ' ')
+```
+
+若父进程是 `/Applications/ChatGPT.app/.../codex app-server` → **被 ChatGPT 抢占**。
+
+### 修复
+
+```bash
+# 1. 杀掉 ChatGPT 持有的 event-stream 进程
+kill $ES_PID
+
+# 2. 重启 cua-router，让我们的 app-server 重新获得观察者
+CUA_ROUTER_ENABLE_EVENT_STREAM=1 CUA_ROUTER_START_READINESS=off CUA_ROUTER_HEALTH_MODE=app-server \
+  bash "$SKILL_ROOT/scripts/daemon.sh" restart
+
+# 3. 验证新 event-stream 的父进程是我们的 app-server
+ps aux | grep 'SkyComputerUseClient event-stream' | grep -v grep
+```
+
+### 预防
+
+- 在录制前关闭 ChatGPT Desktop 应用，或至少确保其 app-server 未运行 `event-stream mcp`。
+- cua-router 的 `daemon.sh restart` 会自动重新启动 app-server 并竞争事件观察者，但如果 ChatGPT 的 app-server 也在持续运行，可能再次抢占。
+- 长期方案：在 `event-stream.sh start` 中增加检测逻辑，如果发现 ChatGPT 持有事件观察者，自动提示用户关闭。
 
 ## 12. 缓存诊断三件套
 

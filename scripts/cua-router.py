@@ -22,6 +22,7 @@ import json
 import os
 import base64
 import hashlib
+import hmac
 import signal
 import socket
 import struct
@@ -114,6 +115,76 @@ def router_identity() -> dict:
         "version": _skill_version(),
         "pid": os.getpid(),
     }
+
+
+# ──────────────────────────────────────────────
+# local endpoint hardening (P0): capability-token + Host allowlist
+# ──────────────────────────────────────────────
+#
+# The HTTP endpoints that execute arbitrary JS / drive the desktop (/exec,
+# /record and the mcp_loop root) must not be callable by any local process or
+# by a browser page (CSRF / DNS-rebinding). We therefore require a shared
+# capability token AND a localhost Host header on those endpoints. Liveness
+# probes (/health, /ready) return status only and stay open so that daemon.sh
+# and humans can keep using `curl localhost:<port>/health` for triage.
+
+# The capability token file. Reuse the app-server token when present so shell
+# wrappers that already resolve the runtime dir need no extra state; otherwise
+# fall back to a router-scoped token file created on demand.
+ROUTER_TOKEN_FILE = Path(
+    os.environ.get("CUA_ROUTER_APP_SERVER_TOKEN_FILE")
+    or (RUNTIME / "app-server.token")
+)
+
+
+def _read_router_token() -> str:
+    """Read the capability token from disk on every call (no caching).
+
+    Reading fresh avoids 401s after `daemon.sh restart` rotates the token while
+    a long-lived client still holds an old value.
+    """
+    try:
+        return ROUTER_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _host_is_localhost(host_header: str, port: int) -> bool:
+    """Accept only loopback Host headers, with lenient port handling.
+
+    Guards against DNS-rebinding where a browser resolves attacker.com to
+    127.0.0.1 but sends Host: attacker.com. IPv6 literals and an omitted port
+    are allowed as long as the host part is loopback.
+    """
+    host = (host_header or "").strip()
+    if not host:
+        return False
+    # Strip an IPv6 bracket form like [::1]:18901 → host="::1", rest=":18901"
+    if host.startswith("["):
+        end = host.find("]")
+        if end == -1:
+            return False
+        hostname = host[1:end]
+        remainder = host[end + 1:]
+        port_part = remainder[1:] if remainder.startswith(":") else ""
+    else:
+        hostname, _, port_part = host.partition(":")
+    if hostname not in ("127.0.0.1", "localhost", "::1"):
+        return False
+    if port_part and port_part != str(port):
+        return False
+    return True
+
+
+def _extract_request_token(headers) -> str:
+    """Pull the caller token from either X-CUA-Token or Authorization: Bearer."""
+    token = (headers.get("X-CUA-Token") or "").strip()
+    if token:
+        return token
+    auth = (headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
 
 # ──────────────────────────────────────────────
 # app-server session (singleton, lazy-init)
@@ -692,6 +763,9 @@ def shutdown_router(server, session):
 
 
 class RouterHandler(BaseHTTPRequestHandler):
+    # Port the server listens on; set by main() so Host allowlist can match it.
+    listen_port: int = 18901
+
     def log_message(self, fmt, *args):
         print(f"[http] {fmt % args}", flush=True)
 
@@ -702,6 +776,40 @@ class RouterHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _reject(self, status: int, message: str):
+        """Send a small JSON error for a rejected protected request."""
+        self._write_json({"isError": True, "error": message,
+                          "content": [{"type": "text", "text": message}]}, status)
+
+    def _authorize_protected(self) -> bool:
+        """Guard endpoints that execute code / drive the desktop.
+
+        Requires (1) a loopback Host header and (2) a matching capability
+        token via X-CUA-Token or Authorization: Bearer. Returns True when the
+        request may proceed; otherwise writes the error response and returns
+        False. Liveness probes must NOT call this.
+        """
+        if not _host_is_localhost(self.headers.get("Host", ""), self.listen_port):
+            self._reject(403, "forbidden: non-local Host header rejected")
+            return False
+        expected = _read_router_token()
+        if not expected:
+            self._reject(
+                503,
+                "router token unavailable; run: bash scripts/daemon.sh restart",
+            )
+            return False
+        provided = _extract_request_token(self.headers)
+        if not provided or not hmac.compare_digest(provided, expected):
+            self._reject(
+                401,
+                "unauthorized: missing or invalid capability token "
+                "(set X-CUA-Token or Authorization: Bearer; "
+                "run 'bash scripts/daemon.sh restart' if it was rotated)",
+            )
+            return False
+        return True
 
     def _handle_ready(self, deep: bool):
         try:
@@ -744,10 +852,14 @@ class RouterHandler(BaseHTTPRequestHandler):
             return
 
         if self.path.split("?", 1)[0] == "/ready":
+            # Liveness probe: status only, stays open (no token / Host guard).
             self._handle_ready(deep=bool(req_body.get("deep", True)))
             return
 
         if self.path.split("?", 1)[0] == "/record":
+            # Protected: drives Record & Replay on the desktop.
+            if not self._authorize_protected():
+                return
             # Record & Replay control endpoint. body: {"action": "start|status|stop"}
             action = str(req_body.get("action", "status")).strip()
             if action not in ("start", "status", "stop"):
@@ -773,6 +885,9 @@ class RouterHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/exec":
+            # Protected: executes arbitrary JS in node_repl (full RCE surface).
+            if not self._authorize_protected():
+                return
             # Direct JS execution endpoint, bypasses newapi
             code = req_body.get("code", "")
             timeout_ms = req_body.get("timeout_ms", 30000)
@@ -787,6 +902,10 @@ class RouterHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(resp_bytes)))
             self.end_headers()
             self.wfile.write(resp_bytes)
+            return
+
+        # Protected: mcp_loop can execute node_repl tool_calls on the desktop.
+        if not self._authorize_protected():
             return
 
         print(f"[router] {self.path} model={req_body.get('model','?')}", flush=True)
@@ -821,6 +940,8 @@ if __name__ == "__main__":
     _session.ensure()
 
     print(f"[cua-router] listening on http://localhost:{args.port}", flush=True)
+    # Bind the listen port so the Host allowlist matches the actual port.
+    RouterHandler.listen_port = args.port
     server = RouterHTTPServer(("127.0.0.1", args.port), RouterHandler)
     stopping = threading.Event()
 

@@ -28,9 +28,18 @@ if [ "${RECORD_DESK_WARM:-1}" = "1" ]; then
   PORT="${CUA_ROUTER_PORT:-18901}"
   if bash "$CUA_ROOT/scripts/daemon.sh" start >/dev/null 2>&1; then
     rdb_info "cua-router 守护进程已就绪 ✅（http://localhost:${PORT}）"
+    # /record 现在需要 capability token（P0 安全加固）。解析运行时 token。
+    CUA_TOKEN=""
+    if [ -n "${CUA_ROUTER_APP_SERVER_TOKEN_FILE:-}" ] && [ -f "$CUA_ROUTER_APP_SERVER_TOKEN_FILE" ]; then
+      CUA_TOKEN="$(cat "$CUA_ROUTER_APP_SERVER_TOKEN_FILE" 2>/dev/null || true)"
+    elif [ -f "${CUA_ROUTER_RUNTIME_DIR:-$CUA_ROOT/runtime}/app-server.token" ]; then
+      CUA_TOKEN="$(cat "${CUA_ROUTER_RUNTIME_DIR:-$CUA_ROOT/runtime}/app-server.token" 2>/dev/null || true)"
+    fi
+    token_header=()
+    [ -n "$CUA_TOKEN" ] && token_header=(-H "X-CUA-Token: $CUA_TOKEN")
     # 冒烟：经 /record 查一次状态，确认 event_stream 已被 app-server 托管。
     record_resp="$(curl -sf -X POST "http://localhost:${PORT}/record" \
-      -H 'Content-Type: application/json' -d '{"action":"status"}' 2>/dev/null)" \
+      -H 'Content-Type: application/json' "${token_header[@]}" -d '{"action":"status"}' 2>/dev/null)" \
       || rdb_die "event_stream 冒烟检查失败：无法调用 /record status"
     if python3 - "$record_resp" <<'PY'
 import json

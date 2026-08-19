@@ -80,7 +80,7 @@ SkyComputerUseService 在录制期间会监听 App 激活/切换（Dock 点击�
 1. 先读 `references/event-stream.md` 学会解读 `events.jsonl`（应用/窗口归属、选中/焦点、AX diff 语法、敏感信息处理）。
 2. **按时间顺序把每个结构性动作映射成一个回放步骤**，覆盖完整链路：把打开/激活应用、地址栏导航、进入列表、进入配置页等前置动作也纳入，不要跳到「有意义的那一步」。只有明确的误操作（误点后立刻撤销、无意义的来回滚动）才作为噪声剔除，其余一律保留。
 3. 仅把**随场景变化的演示值**（网址、工作流名、收件人、金额、文件名…）抽成**技能输入参数**并给出录制默认值；动作本身与其顺序不做删减。若有影响技能的歧义，先问清再动手。
-4. 文本输入必须按控件能力选择写法：原生输入框/地址栏可用 `sky.set_value`；如果录制目标软件不支持 AX 写值、`set_value` 写后校验失败、或 AX 显示为 `文本输入区` / 编辑器容器 / contenteditable / 桌面 IM 输入区，生成技能时必须降级为 shell 层 `pbcopy` 设置剪贴板 + shell 层 `osascript` 发送系统级 `Command+A` / `Command+V`。该类外部系统动作后立刻 `ax.get(app, { refresh: true })` 重新取树，避免旧 `element_index` 失效。
+4. 文本输入必须按控件能力选择写法：原生输入框/地址栏可用 `sky.set_value`；如果录制目标软件不支持 AX 写值、`set_value` 写后校验失败、或 AX 显示为 `文本输入区` / 编辑器容器 / contenteditable / 桌面 IM 输入区，生成技能时必须降级为 shell 层 `/usr/bin/pbcopy` 设置剪贴板（用绝对路径，避免沙箱 PATH 收窄报 `pbcopy 在当前环境不可用`；不可用时按 `cua-router-basic` 的 `references/input-keyboard.md` 兜底章节处理）+ shell 层 `/usr/bin/osascript` 发送系统级 `Command+A` / `Command+V`。该类外部系统动作后立刻 `ax.get(app, { refresh: true })` 重新取树，避免旧 `element_index` 失效。
 5. 消息发送类动作必须重新定位并点击「发送」按钮；不要把录制里的回车或用户键盘输入翻译成 `Return` 发送，除非录制目标明确是地址栏导航或表单提交且已校验。
 6. 优先用稳定语义接口（连接器/专用工具）完成稳定操作；UI 交互、依赖视觉的校验、或“操作界面本身就是任务”时用 **Computer Use**。每步「定位 → 交互 → 校验」，关键步骤后用 `ax.get` 确认结果；凡是 shell / AppleScript / swift / 手动鼠标等外部动作后，用 `{ refresh: true }` 强制重取。
 7. 生成的回放技能应**依赖 cua-router-basic**、用 `sky.*` + `ax.*` 执行，跑在已内置的快执行链上——这是比坐标回放更准、更快、更抗漂移的方式。模板见 `references/replay-skill-template.md`。

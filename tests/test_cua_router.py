@@ -110,6 +110,97 @@ class RouterIdentityTests(unittest.TestCase):
         self.assertIsInstance(identity["pid"], int)
 
 
+class EndpointHardeningTests(unittest.TestCase):
+    """P0: /exec, /record and mcp_loop root require capability token + local Host."""
+
+    def test_host_allowlist_accepts_loopback_and_matching_port(self):
+        self.assertTrue(cua_router._host_is_localhost("127.0.0.1:18901", 18901))
+        self.assertTrue(cua_router._host_is_localhost("localhost:18901", 18901))
+        self.assertTrue(cua_router._host_is_localhost("127.0.0.1", 18901))  # no port
+        self.assertTrue(cua_router._host_is_localhost("localhost", 18901))
+        self.assertTrue(cua_router._host_is_localhost("[::1]:18901", 18901))
+        self.assertTrue(cua_router._host_is_localhost("[::1]", 18901))  # bracketed, no port
+
+    def test_host_allowlist_rejects_non_local_or_wrong_port(self):
+        self.assertFalse(cua_router._host_is_localhost("evil.com", 18901))
+        self.assertFalse(cua_router._host_is_localhost("evil.com:18901", 18901))
+        self.assertFalse(cua_router._host_is_localhost("127.0.0.1:9999", 18901))
+        self.assertFalse(cua_router._host_is_localhost("", 18901))
+        self.assertFalse(cua_router._host_is_localhost("[::1]:9999", 18901))
+
+    def test_token_extraction_supports_header_and_bearer(self):
+        self.assertEqual(
+            cua_router._extract_request_token({"X-CUA-Token": "abc"}), "abc"
+        )
+        self.assertEqual(
+            cua_router._extract_request_token({"Authorization": "Bearer xyz"}), "xyz"
+        )
+        self.assertEqual(
+            cua_router._extract_request_token({"Authorization": "bearer xyz"}), "xyz"
+        )
+        self.assertEqual(cua_router._extract_request_token({}), "")
+        self.assertEqual(
+            cua_router._extract_request_token({"Authorization": "Basic foo"}), ""
+        )
+
+    def test_read_token_missing_file_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = cua_router.ROUTER_TOKEN_FILE
+            try:
+                cua_router.ROUTER_TOKEN_FILE = Path(tmp) / "does-not-exist.token"
+                self.assertEqual(cua_router._read_router_token(), "")
+            finally:
+                cua_router.ROUTER_TOKEN_FILE = old
+
+    def test_read_token_reads_fresh_from_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "app-server.token"
+            token_file.write_text("first-token\n", encoding="utf-8")
+            old = cua_router.ROUTER_TOKEN_FILE
+            try:
+                cua_router.ROUTER_TOKEN_FILE = token_file
+                self.assertEqual(cua_router._read_router_token(), "first-token")
+                # Rotation must be picked up without caching.
+                token_file.write_text("second-token\n", encoding="utf-8")
+                self.assertEqual(cua_router._read_router_token(), "second-token")
+            finally:
+                cua_router.ROUTER_TOKEN_FILE = old
+
+    def test_protected_endpoints_guarded_in_source(self):
+        src = MODULE_PATH.read_text(encoding="utf-8")
+        # Each protected branch must call the guard before doing work.
+        self.assertEqual(src.count("if not self._authorize_protected():"), 3)
+        self.assertIn("hmac.compare_digest", src)
+        # Liveness probes must NOT be guarded.
+        self.assertIn("Liveness probe: status only", src)
+
+    def test_exec_wrapper_sends_token_header(self):
+        script = (SCRIPTS_DIR / "exec.sh").read_text(encoding="utf-8")
+        self.assertIn("cua_read_token", script)
+        self.assertIn("X-CUA-Token", script)
+        self.assertIn("app-server.token", script)
+
+    def test_daemon_probe_sends_token_to_exec(self):
+        script = (SCRIPTS_DIR / "daemon.sh").read_text(encoding="utf-8")
+        self.assertIn("cua_read_token", script)
+        self.assertIn("X-CUA-Token", script)
+
+    def test_record_shell_sends_token_header(self):
+        script = (
+            ROOT / "record-desk-basic" / "scripts" / "event-stream.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("cua_read_token", script)
+        self.assertIn("X-CUA-Token", script)
+
+    def test_record_mcp_proxy_sends_token_header(self):
+        script = (
+            ROOT / "record-desk-basic" / "scripts" / "event-stream-mcp.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("_read_token", script)
+        self.assertIn("X-CUA-Token", script)
+        self.assertIn("import urllib.request", script)
+
+
 class RuntimeResilienceTests(unittest.TestCase):
     def test_exec_uses_liveness_only_when_ensuring_router(self):
         script = (SCRIPTS_DIR / "exec.sh").read_text(encoding="utf-8")
@@ -227,7 +318,7 @@ class RecordDeskEntryPointTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('bash "$CUA_ROOT/scripts/daemon.sh" start', script)
+        self.assertIn('bash "$CUA_ROOT/scripts/daemon.sh" restart', script)
         self.assertIn('-X POST "$BASE/record"', script)
         self.assertIn('-d "{\\"action\\":\\"$action\\"}"', script)
         self.assertNotIn("禁止 shell fallback", script)

@@ -38,6 +38,21 @@ description: >
 | `references/canvas-double-click.md` | Canvas / React Flow 节点双击标准流程 | 双击节点打开配置面板 |
 | `references/cursor-install.md` | 安装到 Cursor 并置顶 `/` 菜单 | Cursor 技能安装/置顶 |
 
+## 传输模式（node_repl vs mcp）
+
+桌面控制有两条传输链路，由环境变量 `SKY_TRANSPORT` 选择：
+
+| 模式 | 值 | 桌面控制在哪执行 | 何时用 |
+|---|---|---|---|
+| node_repl | `node_repl`（**默认，推荐**） | app-server 托管的 node_repl 内 `sky.*` | 所有场景（含 Automan Desktop 宿主） |
+| MCP | `mcp` | cua-router 进程内的签名 `cua mcp` 子进程 | **实验性 / 当前不可用**：见下方说明 |
+
+**为什么默认 node_repl**：`list_apps` / `get_app_state` 等桌面控制依赖 CUAService 与 codex **app-server 的 event-observer 连接**。app-server 托管的 node_repl 会话持有该连接，因此可用。独立的 `cua mcp` stdio 子进程**不建立**该连接，CUAService 会卡在 `CodexAppServerThreadEventObserver.connection` 上静默挂死（表现为 `/cua` 返回空错误 / `mcp_error`）。故 `SKY_TRANSPORT=mcp` 目前**不能驱动桌面控制**，仅保留为 opt-in。
+
+**授权前提**：CUAService 需要 macOS 的**辅助功能（Accessibility）+ 屏幕录制（Screenshots）**授权。首次触碰权限时会弹出官方「Enable ChatGPT Computer Use」窗口，点两个 Allow 即可（授权按 bundle id `com.openai.sky.CUAService` 记录，与谁拉起服务无关，一次授权长期有效）。
+
+`/cua` 结构化端点在两种模式下都可调用；node_repl 模式下由 `sky.*` 承接。
+
 ## 快速启动
 
 执行任何 sky/cua-router 操作前，先确认服务在线：
@@ -46,10 +61,27 @@ description: >
 SKILL_ROOT="${CUA_ROUTER_INSTALL_DIR:-${HOME}/.automan/claude-code-agents/cua-agent/skills/cua-router-basic}"
 [ -f "$SKILL_ROOT/SKILL.md" ] || SKILL_ROOT="${HOME}/.automan/skills/cua-router-basic"
 [ -f "$SKILL_ROOT/SKILL.md" ] || SKILL_ROOT="${HOME}/.cursor/skills/cua-router-basic"
+
+# 默认 node_repl 模式（推荐；含 Automan Desktop 宿主）：
 bash "$SKILL_ROOT/scripts/daemon.sh" start
-bash "$SKILL_ROOT/scripts/daemon.sh" authorize   # 前台唤起 Enable ChatGPT Computer Use 授权窗
-bash "$SKILL_ROOT/scripts/exec.sh" 'nodeRepl.write("ok")'
+bash "$SKILL_ROOT/scripts/daemon.sh" authorize   # 首次前台唤起 Enable ChatGPT Computer Use 授权窗，点两个 Allow
+bash "$SKILL_ROOT/scripts/cua.sh" list_apps                       # 冒烟：应返回 app 列表
+bash "$SKILL_ROOT/scripts/cua.sh" get_app_state '{"app":"Finder"}' # 应返回截图 + AX 文本
 ```
+
+### `/cua` 结构化端点
+
+`scripts/cua.sh <tool> [json-arguments]` 驱动桌面控制（默认经 node_repl 的 `sky.*`）。支持工具：
+`list_apps get_app_state click perform_secondary_action set_value select_text scroll drag press_key type_text`。
+
+```bash
+bash "$SKILL_ROOT/scripts/cua.sh" get_app_state '{"app":"com.google.Chrome"}'
+bash "$SKILL_ROOT/scripts/cua.sh" click '{"app":"Finder","x":100,"y":200}'
+bash "$SKILL_ROOT/scripts/cua.sh" press_key '{"app":"Finder","key":"Command+a"}'
+bash "$SKILL_ROOT/scripts/cua.sh" type_text '{"app":"Finder","text":"hello"}'
+```
+
+> MCP 模式下若返回 `-1743`：说明宿主 app 缺「控制 ChatGPT Computer Use」的自动化授权。请在**宿主 app（Automan Desktop）**里首次触发一次桌面控制以弹窗授权，或到「系统设置 → 隐私与安全性 → 自动化」勾选。node_repl 派生进程无法弹窗（promptPolicy=0），只能由前台宿主 app 授权。
 
 首次在本机使用 Computer Use（读 AX 树 / 操控 Chrome）前，若系统尚未授权，会自动前台弹出 **Enable ChatGPT Computer Use** 窗口；也可手动执行：
 

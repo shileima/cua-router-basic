@@ -119,6 +119,17 @@ bash "$SKILL_ROOT/scripts/exec.sh" -t 60000 '{
 printf '%s' "$TEXT" | /usr/bin/pbcopy
 ```
 
+   若需要探测 `pbcopy` 是否可用，用 `[ -x /usr/bin/pbcopy ]`（判断文件存在且可执行，不受 `PATH` 影响）；确需在 `PATH` 中查找时用 `command -v pbcopy`：
+
+```bash
+if [ -x /usr/bin/pbcopy ]; then
+  PBCOPY=/usr/bin/pbcopy
+else
+  PBCOPY="$(command -v pbcopy 2>/dev/null || true)"
+fi
+[ -n "$PBCOPY" ] && printf '%s' "$TEXT" | "$PBCOPY"
+```
+
 2. **补 PATH 后重试**。若绝对路径仍报缺失（极少见），先补齐系统路径再执行：
 
 ```bash

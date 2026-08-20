@@ -1,6 +1,6 @@
 import path from "node:path";
 import { execFile } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const COMPUTER_USE_RUNTIME_KEY = Symbol.for("openai.computer-use.runtime");
@@ -612,9 +612,33 @@ async function recoverChromeAx(error) {
   }
 }
 
+/**
+ * 推导本 skill 自带的 vendor node_modules 目录。
+ *
+ * 新版 codex（0.148+）的 node_repl 沙箱不再向 JS 暴露 `nodeRepl.env`/`process.env`，
+ * 于是 `NODE_REPL_NODE_MODULE_DIRS` 读到空值，@oai/sky 无法定位、所有 sky.* 调用挂死。
+ * 本文件固定位于 `<skillRoot>/scripts/computer-use-client.mjs`，据此推导出
+ * `<skillRoot>/vendor/cua_node/lib/node_modules` 作为与环境无关的回退搜索根。
+ */
+function vendorModuleDirFromSelf() {
+  try {
+    const selfPath = fileURLToPath(import.meta.url);
+    const scriptsDir = path.dirname(selfPath);
+    const skillRoot = path.dirname(scriptsDir);
+    return path.join(skillRoot, "vendor", "cua_node", "lib", "node_modules");
+  } catch {
+    return "";
+  }
+}
+
 async function importPackagedCreateClient() {
-  const moduleDirs = requireNodeReplEnv()["NODE_REPL_NODE_MODULE_DIRS"];
+  const moduleDirs = readNodeReplEnv()["NODE_REPL_NODE_MODULE_DIRS"];
   const searchRoots = typeof moduleDirs === "string" ? moduleDirs.split(path.delimiter) : [];
+  // env 为空时（新版 codex 沙箱）回退到从本文件位置推导出的 vendor 目录。
+  const fallbackRoot = vendorModuleDirFromSelf();
+  if (fallbackRoot && !searchRoots.includes(fallbackRoot)) {
+    searchRoots.push(fallbackRoot);
+  }
   let lastError;
   for (const searchRoot of searchRoots) {
     if (!searchRoot.trim()) {
@@ -645,6 +669,7 @@ async function importPackagedCreateClient() {
 /** @param {SetupComputerUseRuntimeOptions} [options] */
 export async function setupComputerUseRuntime({ globals = globalThis } = {}) {
   invalidateAxCache();
+  ensureProcessShim();
   let sky = Reflect.get(globalThis, COMPUTER_USE_RUNTIME_KEY);
   if (sky == null) {
     const createClient = await importPackagedCreateClient();
@@ -667,10 +692,20 @@ export async function setupComputerUseRuntime({ globals = globalThis } = {}) {
   return sky;
 }
 
-function requireNodeReplEnv() {
+// 软读取 nodeRepl.env：新版 codex 沙箱可能不暴露该对象，此时返回空对象，
+// 由 importPackagedCreateClient 的 vendor 回退路径兜底，而不是直接抛错。
+function readNodeReplEnv() {
   const nodeRepl = /** @type {typeof globalThis & { nodeRepl?: NodeRepl }} */ (globalThis).nodeRepl;
-  if (nodeRepl?.env == null) {
-    throw new Error("Computer Use requires nodeRepl.env");
+  return nodeRepl?.env ?? {};
+}
+
+// 新版 codex（0.148+）沙箱不再暴露全局 `process`，但 @oai/sky 的 mac
+// create_client 会读取 `process.env.SKY_ENABLE_AUDIO`，缺失时抛
+// `ReferenceError: process is not defined` 导致 sky 初始化失败。
+// 这里补一个最小 process 垫片（仅 env），env 优先取 nodeRepl.env。
+function ensureProcessShim() {
+  if (typeof globalThis.process !== "undefined" && globalThis.process?.env) {
+    return;
   }
-  return nodeRepl.env;
+  Reflect.set(globalThis, "process", { env: { ...readNodeReplEnv() } });
 }

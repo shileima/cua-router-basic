@@ -44,8 +44,36 @@ from vendor_paths import (
     RUNTIME,
     SKILL_ROOT,
 )
+from cua_mcp_client import CuaMcpClient, CUA_MCP_TOOLS
 
 CLIENT_MJS = client_mjs().as_posix()
+
+# Desktop-control transport selector.
+#   node_repl (default legacy) : sky.* runs inside node_repl via the native
+#                                pipe. Broken under codex 0.148+ seatbelt
+#                                sandboxes (no nativePipe, connect() EPERM).
+#   mcp (default)              : desktop control runs in THIS python process
+#                                via the signed `cua mcp` stdio child, so the
+#                                responsible process is the host app (e.g.
+#                                Automan Desktop) and TCC automation works.
+# Defaults to node_repl: the app-server-hosted node_repl holds the CUAService
+# event-observer connection that list_apps/get_app_state require. The standalone
+# `cua mcp` child (SKY_TRANSPORT=mcp) lacks that connection and hangs, so it is
+# opt-in only. Set SKY_TRANSPORT=mcp to force the (currently unusable) mcp path.
+SKY_TRANSPORT = os.environ.get("SKY_TRANSPORT", "node_repl").strip().lower()
+
+# Lazily-created singleton MCP client (only used when SKY_TRANSPORT == "mcp").
+_mcp_client: Optional["CuaMcpClient"] = None
+_mcp_client_lock = threading.Lock()
+
+
+def mcp_client() -> "CuaMcpClient":
+    global _mcp_client
+    if _mcp_client is None:
+        with _mcp_client_lock:
+            if _mcp_client is None:
+                _mcp_client = CuaMcpClient()
+    return _mcp_client
 NEWAPI_BASE = os.environ.get(
     "CUA_ROUTER_NEWAPI_BASE",
     "https://newapi.waimai.test.sankuai.com/v1",
@@ -542,6 +570,61 @@ def execute_tool_call(tool_name: str, arguments: dict) -> dict:
     return {"output": [{"type": "text", "text": f"unknown tool: {tool_name}"}], "isError": True}
 
 
+def _execute_cua_via_node_repl(tool: str, arguments: dict, timeout_ms: int) -> dict:
+    """Drive a structured desktop-control call through the app-server node_repl.
+
+    The standalone ``cua mcp`` child cannot service ``list_apps`` /
+    ``get_app_state`` because CUAService blocks waiting for a codex app-server
+    event-observer connection that a bare stdio client never establishes. The
+    app-server-hosted node_repl path DOES hold that observer connection (it is
+    the same session that drives Record & Replay), so route desktop control
+    through ``globalThis.sky.<tool>(<arguments>)`` there instead.
+
+    Returns an MCP-style result: {"content": [...], "isError": bool}.
+    """
+    # sky mutating calls return no useful payload; read calls return an object.
+    # Serialize the result to JSON text so it survives the node_repl string pipe.
+    payload = json.dumps(arguments or {}, ensure_ascii=False)
+    code = (
+        "if (typeof globalThis.sky === 'undefined' || !globalThis.sky) {\n"
+        f"  const mod = await import(\"{CLIENT_MJS}\");\n"
+        "  await mod.setupComputerUseRuntime({ globals: globalThis });\n"
+        "}\n"
+        f"const __args = {payload};\n"
+        f"const __r = await globalThis.sky[{json.dumps(tool)}](__args);\n"
+        "nodeRepl.write(JSON.stringify(__r === undefined ? {ok: true} : __r));"
+    )
+    result = _session.call_js(code, timeout_ms=timeout_ms)
+    text = _content_text(result)
+    if result.get("isError"):
+        return {"content": [{"type": "text", "text": text or "sky call failed"}],
+                "isError": True}
+    return {"content": [{"type": "text", "text": text}], "isError": False}
+
+
+def execute_cua_tool(tool: str, arguments: dict, timeout_ms: int = 30000) -> dict:
+    """Route a structured desktop-control call to the desktop backend.
+
+    Two transports:
+      - node_repl (default): drive ``sky.<tool>`` inside the app-server-hosted
+        node_repl, which holds the CUAService event-observer connection.
+      - mcp: drive the signed ``cua mcp`` stdio child directly. NOTE: this path
+        cannot service list_apps/get_app_state in the current runtime because
+        CUAService blocks on a missing app-server event-observer connection.
+
+    Returns an MCP-style result: {"content": [...], "isError": bool}.
+    """
+    if tool not in CUA_MCP_TOOLS:
+        return {
+            "content": [{"type": "text",
+                         "text": f"unknown cua tool: {tool}; valid: {', '.join(CUA_MCP_TOOLS)}"}],
+            "isError": True,
+        }
+    if SKY_TRANSPORT == "mcp":
+        return mcp_client().call_tool(tool, arguments or {}, timeout_ms=timeout_ms)
+    return _execute_cua_via_node_repl(tool, arguments or {}, timeout_ms=timeout_ms)
+
+
 # ──────────────────────────────────────────────
 # readiness probe (liveness of node_repl + real sky native pipe)
 # ──────────────────────────────────────────────
@@ -608,6 +691,26 @@ def probe_ready(deep: bool = True) -> dict:
     except OSError:
         res["socket"] = False
 
+    # MCP transport: desktop control runs in-process via the signed cua mcp
+    # child. Readiness == the child can service list_apps (proves the native
+    # pipe + CUAService + TCC automation approval are all in place).
+    if SKY_TRANSPORT == "mcp":
+        try:
+            r = mcp_client().list_apps(timeout_ms=12000)
+        except Exception as exc:  # noqa: BLE001 - surfaced as reason
+            res["reason"] = f"mcp_error: {exc}"
+            return res
+        text = _content_text(r)
+        if r.get("isError"):
+            res["reason"] = _classify_probe_error(text)
+            return res
+        res["live"] = True
+        res["sky"] = True
+        res["ready"] = True
+        res["socket"] = True
+        res["reason"] = "ok"
+        return res
+
     try:
         live = _session.call_js('nodeRepl.write("ok")', 6000)
     except Exception as exc:  # noqa: BLE001 - surfaced as reason
@@ -656,6 +759,22 @@ def probe_app_server_live() -> dict:
         "ts": int(time.time()),
     }
     res.update(router_identity())
+
+    # MCP transport does not use the codex app-server / node_repl at all;
+    # liveness == the signed cua mcp child is (or can be) spawned. Avoid
+    # touching the app-server here so a stale launchd app-server token cannot
+    # make /health report router_error (401) for a router that is actually fine.
+    if SKY_TRANSPORT == "mcp":
+        try:
+            mcp_client().ensure()
+        except Exception as exc:  # noqa: BLE001 - surfaced as reason
+            res["reason"] = f"mcp_error: {exc}"
+            return res
+        res["ready"] = True
+        res["live"] = True
+        res["reason"] = "cua_mcp_live"
+        return res
+
     try:
         _session.ensure()
     except Exception as exc:  # noqa: BLE001 - surfaced as reason
@@ -759,6 +878,9 @@ def _get_api_key() -> str:
 def shutdown_router(server, session):
     """Release resources owned by the router after its serve loop stops."""
     session.close()
+    if _mcp_client is not None:
+        with contextlib.suppress(Exception):
+            _mcp_client.close()
     server.server_close()
 
 
@@ -884,6 +1006,37 @@ class RouterHandler(BaseHTTPRequestHandler):
             self.wfile.write(resp_bytes)
             return
 
+        if self.path.split("?", 1)[0] == "/cua":
+            # Protected: structured desktop-control call routed to the signed
+            # cua mcp child (MCP transport). body:
+            #   {"tool": "get_app_state", "arguments": {...}, "timeout_ms": N}
+            if not self._authorize_protected():
+                return
+            tool = str(req_body.get("tool", "")).strip()
+            arguments = req_body.get("arguments") or {}
+            timeout_ms = int(req_body.get("timeout_ms", 30000))
+            if not isinstance(arguments, dict):
+                resp_bytes = json.dumps({
+                    "isError": True,
+                    "content": [{"type": "text", "text": "arguments must be an object"}],
+                }).encode()
+            else:
+                try:
+                    result = execute_cua_tool(tool, arguments, timeout_ms=timeout_ms)
+                    resp_bytes = json.dumps(result, ensure_ascii=False).encode()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[cua] error: {e}", flush=True)
+                    resp_bytes = json.dumps({
+                        "isError": True,
+                        "content": [{"type": "text", "text": str(e)}],
+                    }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_bytes)))
+            self.end_headers()
+            self.wfile.write(resp_bytes)
+            return
+
         if self.path == "/exec":
             # Protected: executes arbitrary JS in node_repl (full RCE surface).
             if not self._authorize_protected():
@@ -936,8 +1089,19 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"[cua-router] skill root: {SKILL_ROOT}", flush=True)
-    print(f"[cua-router] warming up bundled app-server...", flush=True)
-    _session.ensure()
+    print(f"[cua-router] sky transport: {SKY_TRANSPORT}", flush=True)
+    if SKY_TRANSPORT == "mcp":
+        # MCP transport does not need node_repl; warm the signed cua mcp child
+        # so the first /cua call is fast. Failure here is non-fatal (the child
+        # respawns lazily on demand).
+        print(f"[cua-router] warming up cua mcp child...", flush=True)
+        try:
+            mcp_client().ensure()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cua-router] warning: cua mcp warmup failed: {exc}", flush=True)
+    else:
+        print(f"[cua-router] warming up bundled app-server...", flush=True)
+        _session.ensure()
 
     print(f"[cua-router] listening on http://localhost:{args.port}", flush=True)
     # Bind the listen port so the Host allowlist matches the actual port.

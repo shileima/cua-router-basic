@@ -69,9 +69,13 @@ cua_read_token() {
   [ -f "$f" ] && cat "$f" 2>/dev/null || true
 }
 
-# 浅探针（liveness）：仅验证 HTTP + app-server + node_repl 能跑 JS。
+# 浅探针（liveness）。
+#   - SKY_TRANSPORT=mcp（默认）：桌面控制走 cua-router 进程内的 cua mcp 子进程，
+#     node_repl 不再是主链路。探活只需确认 HTTP + app-server 存活（/health）。
+#   - node_repl（显式回退）：验证 /exec 能跑一段 JS。
 health_check() {
-  if [ "${CUA_ROUTER_HEALTH_MODE:-exec}" = "app-server" ]; then
+  if [ "${SKY_TRANSPORT:-node_repl}" = "mcp" ] \
+    || [ "${CUA_ROUTER_HEALTH_MODE:-exec}" = "app-server" ]; then
     local hj
     hj="$(router_health_json)"
     [ -n "$hj" ] || return 1
@@ -88,6 +92,26 @@ health_check() {
     -H 'Content-Type: application/json' "${token_header[@]}" \
     -d '{"code":"nodeRepl.write(\"ok\")","timeout_ms":8000}' \
     2>/dev/null | grep -qE '"text"[[:space:]]*:[[:space:]]*"ok"'
+}
+
+# 深探针（mcp 模式）：调用 /cua list_apps，真正证明 cua mcp 子进程能操控桌面
+# （native pipe + CUAService + TCC 自动化授权全部就绪）。
+health_check_cua_mcp() {
+  local token
+  token="$(cua_read_token)"
+  # bash 3.2 (macOS) treats an empty array expansion under `set -u` as unbound,
+  # so build the header as a plain string and only pass -H when present.
+  if [ -n "$token" ]; then
+    curl -sf -X POST "$BASE/cua" \
+      -H 'Content-Type: application/json' -H "X-CUA-Token: $token" \
+      -d '{"tool":"list_apps","arguments":{},"timeout_ms":12000}' \
+      2>/dev/null | grep -qE '"isError"[[:space:]]*:[[:space:]]*false'
+  else
+    curl -sf -X POST "$BASE/cua" \
+      -H 'Content-Type: application/json' \
+      -d '{"tool":"list_apps","arguments":{},"timeout_ms":12000}' \
+      2>/dev/null | grep -qE '"isError"[[:space:]]*:[[:space:]]*false'
+  fi
 }
 
 router_identity_matches_current() {
@@ -298,6 +322,25 @@ cua_request_permissions() {
 
 # 浅探活通过后调用：权限引导 + Chrome 预检 + 预热 CUAService + 深就绪校验。
 cua_finalize_ready() {
+  # MCP 模式（默认）：桌面控制走 cua-router 进程内的 cua mcp 子进程。深就绪 =
+  # /cua list_apps 成功。若失败，多半是 TCC 自动化授权缺失（-1743）——但这只能由
+  # 前台宿主 app（Automan Desktop）在其责任进程下授权，daemon 无法代劳，故仅告警。
+  # 注意：此处不做 Chrome 预检——通用 /cua 桌面控制（如查 Finder）与 Chrome 无关，
+  # Chrome 预检只属于要操作 Chrome 的回放场景（record-desk / exec.sh 内按需触发）。
+  if [ "${SKY_TRANSPORT:-node_repl}" = "mcp" ]; then
+    cua_service_ensure 0 \
+      || echo "[cua-router] warning: 等待 ${CUA_SERVICE_WAIT_SECS}s 后 CUAService socket 仍未出现" >&2
+    if health_check_cua_mcp; then
+      echo "[cua-router] cua readiness: ready (cua mcp 可操控桌面)"
+      return 0
+    fi
+    echo "[cua-router] warning: cua mcp 深就绪失败（多为 TCC 自动化授权缺失/-1743）。" >&2
+    echo "[cua-router] 请在宿主 app（Automan Desktop）里首次触发桌面控制以完成授权；" >&2
+    echo "[cua-router] 或到 系统设置 → 隐私与安全性 → 自动化，允许宿主 app 控制 ChatGPT Computer Use。" >&2
+    return 1
+  fi
+
+  # legacy node_repl 分支保留 Chrome 预检（回放前确保 Chrome 有可见窗口）。
   cua_preflight_chrome_warn
 
   if health_check_deep; then
@@ -327,6 +370,12 @@ cua_finalize_ready() {
 }
 
 start_readiness_enabled() {
+  # MCP 模式（默认）的深就绪探针是 /cua list_apps，不触碰 node_repl 的事件观察者，
+  # 默认开启，好让 start 阶段就暴露 TCC 授权问题。
+  if [ "${SKY_TRANSPORT:-node_repl}" = "mcp" ]; then
+    [ "${CUA_ROUTER_START_READINESS:-on}" != "off" ]
+    return $?
+  fi
   # A deep node_repl probe opens the single Sky event observer. Do not run it
   # automatically because Record & Replay must own that observer connection.
   [ "${CUA_ROUTER_START_READINESS:-off}" != "off" ]

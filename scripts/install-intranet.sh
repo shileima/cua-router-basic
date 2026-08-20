@@ -147,7 +147,10 @@ ensure_slim_package() {
 bootstrap_vendor_and_cursor() {
   local full_args=(--skill-root "$TARGET" --vendor-mode "$VENDOR_MODE")
   [ "$INSTALL_CURSOR" -eq 0 ] && full_args+=(--no-cursor)
-  bash "$TARGET/scripts/install-full.sh" "${full_args[@]}"
+  # Suppress install-full.sh's own authorization prompt; the intranet flow runs
+  # maybe_prompt_authorize once at the end of main() to avoid a double prompt.
+  CUA_ROUTER_AUTHORIZE_ON_INSTALL=off \
+    bash "$TARGET/scripts/install-full.sh" "${full_args[@]}"
 }
 
 main() {
@@ -167,6 +170,8 @@ main() {
   fi
   vendor_ready "$TARGET" || die "vendor bootstrap failed"
   sync_automan_install "$TARGET"
+  # Foreground-prompt Computer Use permissions at install time (once).
+  maybe_prompt_authorize "$TARGET"
   info "install complete"
   info "SKILL_ROOT=$TARGET"
   info "verify: bash \"$TARGET/scripts/daemon.sh\" status"

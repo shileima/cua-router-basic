@@ -119,5 +119,10 @@ fi
 
 sync_automan_install "$SKILL_ROOT"
 
+# Vendor + registration are done; prompt for Computer Use permissions now so the
+# "Enable ChatGPT Computer Use" window shows up at install time (foreground),
+# not on the first silent desktop-control run.
+maybe_prompt_authorize "$SKILL_ROOT"
+
 info "full install complete: $SKILL_ROOT"
 info "verify: bash \"$SKILL_ROOT/scripts/daemon.sh\" status"

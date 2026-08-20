@@ -270,6 +270,113 @@ pid_matches_current_install() {
   esac
 }
 
+# Print the pids currently listening on $PORT that are *confirmed* cua-router
+# processes (command line contains cua-router.py --port $PORT). Other listeners
+# (unrelated programs that happen to grab the port) are intentionally excluded
+# so we never kill something we don't own.
+port_router_pids() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  local pid
+  for pid in $(lsof -ti "tcp:${PORT}" -sTCP:LISTEN 2>/dev/null); do
+    pid_matches_router "$pid" && printf '%s\n' "$pid"
+  done
+}
+
+# All pids listening on a given TCP port, regardless of identity.
+port_any_pids() {
+  local port="$1"
+  command -v lsof >/dev/null 2>&1 || return 0
+  lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null || true
+}
+
+# Terminate every listener on a port: SIGCONT (in case it is stopped) + SIGTERM,
+# wait for it to release the port, then SIGKILL as a last resort. Prints why each
+# pid is being killed; cua-router listeners are noted as ours, anything else is
+# flagged as a foreign occupant so the log is honest about what we terminated.
+free_port() {
+  local port="$1" pid cmd i
+  [ -n "$(port_any_pids "$port")" ] || return 0
+  for pid in $(port_any_pids "$port"); do
+    cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    if pid_matches_router "$pid"; then
+      echo "[cua-router] freeing port ${port}: terminating our cua-router pid=${pid}" >&2
+    else
+      echo "[cua-router] freeing port ${port}: terminating occupant pid=${pid} (${cmd:0:80})" >&2
+    fi
+    kill -CONT "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  done
+  for i in 1 2 3 4 5; do
+    [ -z "$(port_any_pids "$port")" ] && break
+    sleep 1
+  done
+  for pid in $(port_any_pids "$port"); do
+    echo "[cua-router] port ${port} pid=${pid} survived SIGTERM; sending SIGKILL" >&2
+    kill -9 "$pid" 2>/dev/null || true
+  done
+}
+
+# Pre-start port hygiene (opt-out via CUA_ROUTER_FREE_PORTS_ON_START=off):
+#   - 18901 (HTTP): if occupied, kill the occupant so bind never hits
+#     "Address already in use".
+#   - 18902 (app-server): tear down any leftover launchd app-server first (a
+#     stale one answers new websocket handshakes with 401 Unauthorized using an
+#     old capability token), then free the port. This prevents the router from
+#     "跟" a mismatched app-server on 18902.
+free_ports_before_start() {
+  case "${CUA_ROUTER_FREE_PORTS_ON_START:-on}" in
+    off|0|false|no) return 0 ;;
+  esac
+  # Never disturb a healthy current service — that path is handled by cmd_start.
+  if health_check && router_identity_matches_current; then
+    return 0
+  fi
+  # app-server first: unload launchd unit, then reclaim its port.
+  app_server_stop
+  free_port "$APP_SERVER_PORT"
+  # then the HTTP port.
+  free_port "$PORT"
+  rm -f "$PID_FILE"
+}
+
+# Reap a stale/zombie cua-router that still holds $PORT but is not healthy
+# (e.g. its app-server connection died -> "Broken pipe", leaving the HTTP port
+# bound but /ready failing). Without this, a fresh start hits
+# "OSError: [Errno 48] Address already in use" and never comes up.
+#
+# We only kill listeners we can positively identify as cua-router via
+# pid_matches_router; anything else is left untouched and the caller keeps its
+# original "refuse automatic takeover" behavior.
+reap_stale_routers() {
+  # A healthy router on this port is handled earlier by cmd_start; only reap
+  # when the port is unhealthy.
+  health_check && return 0
+  local pids pid reaped=0
+  pids="$(port_router_pids)"
+  [ -n "$pids" ] || return 0
+  for pid in $pids; do
+    echo "[cua-router] reaping stale cua-router holding port ${PORT}: pid=${pid} (unhealthy)" >&2
+    # A stopped (SIGSTOP'd) process ignores SIGTERM until resumed, so wake it
+    # first, then ask it to terminate.
+    kill -CONT "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+    reaped=1
+  done
+  [ "$reaped" -eq 1 ] || return 0
+  # Wait for the port to actually free up before the caller binds it.
+  local i
+  for i in 1 2 3 4 5; do
+    [ -z "$(port_router_pids)" ] && break
+    sleep 1
+  done
+  # Last resort: SIGKILL anything of ours still clinging to the port.
+  for pid in $(port_router_pids); do
+    echo "[cua-router] stale cua-router pid=${pid} survived SIGTERM; sending SIGKILL" >&2
+    kill -9 "$pid" 2>/dev/null || true
+  done
+  rm -f "$PID_FILE"
+}
+
 acquire_lifecycle_lock() {
   local attempt owner
   command -v shlock >/dev/null 2>&1 || {
@@ -505,13 +612,18 @@ cmd_start() {
   if [ -n "${old_pid:-}" ]; then
     if pid_alive "$old_pid"; then
       if ! health_check; then
-        if pid_matches_current_install "$old_pid" \
-          || { [ "${CUA_ROUTER_FORCE_TAKEOVER:-0}" = "1" ] && pid_matches_router "$old_pid"; }; then
+        if pid_matches_router "$old_pid"; then
+          # Any unhealthy cua-router (current install OR a foreign leftover that
+          # is still positively a cua-router) is safe to restart automatically:
+          # the identity is confirmed via the command line, so we are only ever
+          # killing our own process. This removes the need for a manual kill or
+          # CUA_ROUTER_FORCE_TAKEOVER on the common "stale/zombie router" case.
           echo "[cua-router] pid ${old_pid} alive but unhealthy, restarting..."
           kill "$old_pid" 2>/dev/null || true
           sleep 1
         else
-          echo "[cua-router] foreign pid ${old_pid} is alive but unhealthy; refusing automatic takeover" >&2
+          # Not a cua-router at all: never touch it automatically.
+          echo "[cua-router] foreign pid ${old_pid} is alive but unhealthy and is not a cua-router; refusing automatic takeover" >&2
           echo "[cua-router] set CUA_ROUTER_FORCE_TAKEOVER=1 to replace it explicitly" >&2
           return 1
         fi
@@ -531,7 +643,18 @@ cmd_start() {
   export_cua_runtime_dir
   echo "[cua-router] runtime=${CUA_ROUTER_RUNTIME_DIR}"
   python3 -c "import sys; sys.path.insert(0, '$SCRIPT_DIR'); import vendor_paths; vendor_paths.write_runtime_config()"
+
+  # Pre-start port hygiene: free 18901 (HTTP) and tear down any stale app-server
+  # on 18902 (a leftover one rejects new handshakes with 401 Unauthorized) BEFORE
+  # bringing app-server up, so we never bind onto or "follow" a mismatched
+  # app-server. Healthy current service is preserved by free_ports_before_start.
+  free_ports_before_start
+
   app_server_start
+
+  # Final guard before binding, in case anything re-grabbed the HTTP port between
+  # the cleanup above and here.
+  reap_stale_routers
 
   nohup python3 "$SCRIPT_DIR/cua-router.py" --port "$PORT" >> "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"

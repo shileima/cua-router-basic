@@ -169,7 +169,7 @@ class EndpointHardeningTests(unittest.TestCase):
     def test_protected_endpoints_guarded_in_source(self):
         src = MODULE_PATH.read_text(encoding="utf-8")
         # Each protected branch must call the guard before doing work.
-        self.assertEqual(src.count("if not self._authorize_protected():"), 3)
+        self.assertEqual(src.count("if not self._authorize_protected():"), 4)
         self.assertIn("hmac.compare_digest", src)
         # Liveness probes must NOT be guarded.
         self.assertIn("Liveness probe: status only", src)
@@ -247,10 +247,12 @@ class RuntimeResilienceTests(unittest.TestCase):
         self.assertIn("release_lifecycle_lock; exit 143", script)
         self.assertIn('[ "$owner" = "$$" ] && rm -f "$LOCK_FILE"', script)
 
-    def test_daemon_never_kills_foreign_pid_without_takeover(self):
+    def test_daemon_never_kills_non_router_pid_without_takeover(self):
         script = (SCRIPTS_DIR / "daemon.sh").read_text(encoding="utf-8")
-
-        self.assertIn('pid_matches_current_install "$old_pid"', script)
+        # Any confirmed cua-router (pid_matches_router) is safe to auto-restart;
+        # only truly foreign (non cua-router) processes are protected by FORCE_TAKEOVER.
+        self.assertIn('pid_matches_router "$old_pid"', script)
+        self.assertIn('is not a cua-router; refusing automatic takeover', script)
         self.assertIn('${CUA_ROUTER_FORCE_TAKEOVER:-0}', script)
 
     def test_exec_retries_only_connection_failure_once(self):

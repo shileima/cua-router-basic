@@ -40,3 +40,7 @@ automan_available || die "automan profile not found: $(automan_profile_dir)"
 
 sync_automan_install "$SKILL_ROOT"
 info "automan sync complete for $SKILL_ROOT"
+
+# Prompt Computer Use permissions against the installed automan copy (the one
+# that actually carries vendor/ and gets run by the agent).
+maybe_prompt_authorize "$(automan_skill_dir)"

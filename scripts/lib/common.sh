@@ -488,3 +488,35 @@ verify_sha256_sidecar() {
     die "checksum mismatch for $(basename "$file") (expected $expected, got $actual)"
   fi
 }
+
+# Foreground-prompt macOS Computer Use permissions right after an install so the
+# user sees the "Enable ChatGPT Computer Use" window while they are still at the
+# machine, instead of hitting a silent hang (or a timed-out authorize) the first
+# time a skill runs desktop control.
+#
+# Safe to call at the tail of any install-*.sh flow:
+#   - skipped on non-macOS;
+#   - skipped when the bundled Computer Use app is missing (no authorizer to open);
+#   - opt-out via CUA_ROUTER_AUTHORIZE_ON_INSTALL=off (CI / headless);
+#   - never fails the install: authorization is best-effort, so a non-zero
+#     daemon.sh authorize (e.g. user dismissed the window) only warns.
+maybe_prompt_authorize() {
+  local skill_root="${1:-$COMMON_SKILL_ROOT}"
+
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  case "${CUA_ROUTER_AUTHORIZE_ON_INSTALL:-on}" in
+    off|0|false|no) info "skipping post-install authorization (CUA_ROUTER_AUTHORIZE_ON_INSTALL=off)"; return 0 ;;
+  esac
+
+  if [ ! -d "$skill_root/vendor/computer-use/Codex Computer Use.app" ]; then
+    warn "Computer Use app not bundled under $skill_root/vendor/computer-use/; skipping authorization prompt"
+    return 0
+  fi
+
+  info "唤起「Enable ChatGPT Computer Use」授权窗口（辅助功能 + 屏幕录制），请依次点击 Allow..."
+  info "如需跳过，可设置 CUA_ROUTER_AUTHORIZE_ON_INSTALL=off 后重装。"
+  if ! bash "$skill_root/scripts/daemon.sh" authorize; then
+    warn "授权未完成；稍后可手动执行： bash \"$skill_root/scripts/daemon.sh\" authorize"
+  fi
+  return 0
+}

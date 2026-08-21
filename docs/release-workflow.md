@@ -2,6 +2,8 @@
 
 三条独立路径：**本地临时试用**（automan / cursor）、**正式 release**（tag + GitHub Release）、**回滚**。
 
+**版本记录与迭代功能**单独维护在仓库根目录 [`RELEASE.md`](../RELEASE.md)，不在本文档内维护版本历史。
+
 ## 版本号约定
 
 - **正式版**：semver `x.y.z`（如 `0.4.8`, `0.5.0`）。`scripts/bump-version.sh` 只接受这种格式。
@@ -92,6 +94,8 @@ cd /Users/shilei/code/cua-router-basic
 bash scripts/bump-version.sh 0.5.0
 git diff  # 核对：.meta.json + 2 个 plugin.json + marketplace.json
 
+# 1.5 更新 RELEASE.md（版本锚点 + 详情，见文件顶部维护约定）
+
 # 2. 提交 + 走 release
 bash scripts/release.sh 0.5.0
 # 该脚本会：
@@ -107,7 +111,7 @@ bash scripts/release.sh 0.5.0
 --dry-run       # 只打包，不 tag、不 gh release（本地验证用）
 --skip-git      # 仅上传（补传 asset 时用）
 --skip-upload   # 打包完停在 dist/，人工检查
---notes FILE    # 用外部 markdown 作为 release notes
+--notes FILE    # 用外部 markdown 作为 release notes（可从 RELEASE.md 对应版本详情截取）
 ```
 
 ### 上游同步（CI）
@@ -156,18 +160,6 @@ curl -fsSL https://raw.githubusercontent.com/shileima/cua-router-basic/main/scri
 | 用户 `daemon.sh start` 失败 `codex not found` | vendor 没同步或 CODEX_BIN 环境变量污染 | `bash scripts/setup-vendor.sh` 或清 `CODEX_BIN` |
 | 用户装完 `ax.get is not a function` | 装了包但 daemon 用的还是旧 bootstrap | `daemon.sh restart` |
 
-## 版本演进锚点（本仓库）
-
-| 版本 | 关键变化 |
-|---|---|
-| 0.4.8 | 无 AX 缓存 |
-| **0.4.9-beta.1** | 引入 `globalThis.ax` + sky wrapper 自动失效缓存 |
-| **0.4.9-beta.2** | 新增 `ax.get({maxAgeMs})` + `ax._stats()` / `ax._resetStats()` 应对轮询异步 UI |
-| **0.4.27** | 新增 `/cua` 结构化端点 + `SKY_TRANSPORT` 传输模式（node_repl/mcp）；兼容 codex 0.148+ 沙箱（vendor 回退 + process 垫片） |
-| **0.4.28** | 启动前端口自愈清理（18901/18902 被占用时自动清理，无需手动 kill/FORCE_TAKEOVER）；安装后自动唤起「Enable ChatGPT Computer Use」授权窗 |
-| **0.4.29** | record-desk-basic 强化回放执行纪律（每 action 操作前/后审视 AX Tree、验证上一步、禁止跳步）；安装流程提前同步 companion 技能 |
-| 0.5.0（预留） | beta 稳定后的第一个正式版号；应包含 beta.1/beta.2 的所有变化 |
-
 ## Checklist：一次典型发布
 
 ```
@@ -179,5 +171,5 @@ curl -fsSL https://raw.githubusercontent.com/shileima/cua-router-basic/main/scri
 [ ] 至少一个端到端 case（真 Chrome + ax.get + sky.click + ax.get）
 [ ] beta：只同步到 automan / cursor / claude，不 push
 [ ] 正式：git commit + gh release + upload dist/*
-[ ] 更新 docs/release-workflow.md 顶部的"版本演进锚点"
+[ ] 更新根目录 RELEASE.md：版本锚点表 + 详情（beta 与正式版各一条）
 ```

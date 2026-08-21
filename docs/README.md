@@ -11,6 +11,7 @@
 | [`risks.md`](./risks.md) | 出线上问题、评估新改动引入的风险、复现"缓存陈旧"类 bug |
 | [`sky-and-vendor-sync.md`](./sky-and-vendor-sync.md) | sky API 版本升级、vendor 同步、新增 sky 方法要不要 wrap |
 | [`release-workflow.md`](./release-workflow.md) | 发新版、beta 试用、本地 automan / cursor / claude 应用、回滚 |
+| [`../RELEASE.md`](../RELEASE.md) | 每次发版的版本锚点与迭代功能记录 |
 | [`troubleshooting.md`](./troubleshooting.md) | `ax is undefined`、`get_app_state` 超时、缓存陈旧、preflight 失败等 |
 
 ## 快速心智模型
@@ -30,10 +31,6 @@
 4. **改 sky API 白名单前先读 [`ax-cache-design.md`](./ax-cache-design.md)**，白名单不全会导致缓存陈旧类 bug。
 5. **发版走 [`release-workflow.md`](./release-workflow.md)**，4 处版本号必须同步。
 
-## 版本历史锚点
+## 版本历史
 
-- `0.4.8` 及之前：无 AX 缓存，每次 `sky.get_app_state({app,disableDiff:true})` 都是真 RPC。
-- `0.4.9-beta.1`：引入 `globalThis.ax` + wrapper 自动失效缓存。基础功能完成。
-- `0.4.9-beta.2`：新增 `ax.get({ maxAgeMs })` 与 `ax._stats()` / `ax._resetStats()`，处理"轮询异步 UI"场景。当前 head。
-
-改动到具体文件的映射见 [`architecture.md#关键文件`](./architecture.md#关键文件)。
+版本锚点与每次迭代功能摘要见 [`../RELEASE.md`](../RELEASE.md)。改动到具体文件的映射见 [`architecture.md#关键文件`](./architecture.md#关键文件)。

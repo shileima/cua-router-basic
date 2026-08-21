@@ -120,7 +120,9 @@ bash "$SKILL_ROOT/scripts/lib/preflight-chrome.sh" fix      # 手动修复
 |---|---|---|
 | 读取 `/exec` 结果 | `nodeRepl.write(...)` 或 `exec.sh` | 依赖代码块最后一条表达式 |
 | 重复执行 JS | 直接使用 `exec.sh`；`/exec` 自动隔离每次作用域 | 为避免 `already declared` 手工改全局变量 |
-| URL 导航 | 地址栏 `set_value(addrIdx, url)` + `press_key("Return")` | `type_text(url)` |
+| URL 导航 | 仅当当前动作本身是地址栏 / 原生 URL 输入框导航时，地址栏 `set_value(addrIdx, url)` + `press_key("Return")` | 用 URL 导航替代页面内搜索、筛选、按钮点击、表单提交等用户动作；`type_text(url)` |
+| 录制回放动作等价 | 按录制动作类型逐步复刻：页面内搜索框就定位页面输入框，筛选按钮就点击按钮，提交表单就操作表单 | 直接打开最终 URL、改 `window.location`、AppleScript `set URL` 来跳过页面内控件操作 |
+| 浏览器顶部地址栏保护 | 普通文本输入默认不得落到 Chrome/Safari 顶部导航地址栏；只有明确的 URL 打开/导航动作才允许向地址栏写入 | 在 Chrome/Safari 把搜索词、表单内容、聊天内容写到地址栏 |
 | 文本输入（最高优先级） | 目标控件聚焦后用 `/usr/bin/pbcopy` 设置剪贴板（绝对路径，避免沙箱 PATH 收窄报 `pbcopy 在当前环境不可用`），再用 `sky.press_key({ app, key: "Command+a" })` + `sky.press_key({ app, key: "Command+v" })`，随后 `ax.get(app, { refresh: true })` 校验 Value/文本/按钮状态 | 裸 `pbcopy`、优先 `set_value`、`type_text` 或 AppleScript 粘贴后不校验 |
 | 获取 AX Tree | `ax.get(app)`（内部固定 `disableDiff:true` + 缓存自动失效） | 手写 `disableDiff:false`、跨交互复用旧树 |
 | 一段代码内取多次树 | 只调一次 `ax.get(app)`，多次 `ax.findIdx` 复用 `s.text` | 每次 `findIdx` 前都取一次树 |

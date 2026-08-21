@@ -6,6 +6,8 @@
 
 > **执行纪律（强制）**：回放时**认真对待录制里的每一个正常 action**，不得跳过、合并或忽略。每个 action 必须走完「操作前审视 AX Tree → 记录本步目标节点 → 执行 → 操作后审视 AX Tree 验证上一步 → 规划下一步」循环；验证失败时停止跳步，先排查再继续。
 
+> **动作等价约束（强制）**：回放步骤必须保持录制动作类型一致。录制是地址栏输入 URL，才允许用地址栏导航；录制是页面内搜索框输入、页面按钮点击、筛选项点击或表单提交时，必须定位并操作对应页面控件，禁止直接打开操作后的最终 URL 或用 `window.location` / AppleScript `set URL` 绕过。
+
 ## 目标技能骨架
 
 ```
@@ -56,7 +58,7 @@ description: >
 
 1. 打开/激活目标应用并导航到起始页（如地址栏输入 URL）——这也是录制的一部分，必须写出来。
 2. **操作前** `ax.get("<bundleId>")` 审视 AX Tree → 定位本步目标 → 交互 → **操作后** `ax.get(app)` 验证上一步生效。
-3. 交互用 `sky.click / sky.set_value / sky.press_key`；URL/中文先判断控件能力，原生输入框用 `set_value`，不支持 AX 写值的输入区用 shell 级系统粘贴。
+3. 交互用 `sky.click / sky.set_value / sky.press_key`；URL/中文先判断控件能力，原生输入框用 `set_value`，页面内搜索/筛选/表单字段必须定位到对应控件再输入，不能直接改成最终结果 URL。
 4. shell / AppleScript / swift 等外部系统动作后必须 `ax.get(app, { refresh: true })`，避免复用旧 `element_index`。
    - AX 缺失时按 AX → hover → OCR → 坐标扫描 降级（见 cua-router-basic `references/ax-locating.md`）。
 5. 最后一步做结果校验（如出现「已保存」或目标节点文本），与录制的收尾动作对应。
@@ -67,7 +69,10 @@ description: >
 | 录制事件 | 回放写法 |
 |---|---|
 | 点击某按钮（有 AX target） | `ax.findIdx(s.text, "<按钮文案>")` → `sky.click({ app, x, y })` |
-| 在原生输入框/地址栏输入文本或 URL | `sky.set_value({ app, element_index: idx, value })` +（地址栏导航时）`press_key("Return")` |
+| 在原生输入框输入文本 | `sky.set_value({ app, element_index: idx, value })` |
+| 浏览器顶部地址栏输入 URL | 仅在明确导航动作时，定位 Chrome/Safari 顶部地址栏后 `sky.set_value(..., url)` + `press_key("Return")` |
+| 页面内搜索框/筛选框/表单字段输入文本 | 先定位对应页面控件，再输入并校验；不要直接跳最终结果页 URL |
+| 页面内按钮点击、筛选项切换、列表翻页 | 先定位当前页面上的具体控件，再逐步点击；不要省略中间状态 |
 | 在不支持 AX 写值的输入区输入文本 | 聚焦输入区 → shell `/usr/bin/pbcopy` 写剪贴板（绝对路径，`pbcopy 不可用` 时见 `cua-router-basic` 的 `references/input-keyboard.md` 兜底章节）→ shell `/usr/bin/osascript` 系统级 `Command+A` / `Command+V` → `ax.get(app, { refresh: true })` 校验 |
 | 发送消息 | 粘贴后重新取树定位「发送」按钮 → `sky.click({ app, element_index: sendIdx })`；不要用 `Return` 代替 |
 | hover 后才出现的菜单 | 先 swift 移动鼠标触发 hover，再点热区（cua-router-basic `references/hover-menu.md`） |

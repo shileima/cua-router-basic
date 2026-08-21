@@ -84,6 +84,16 @@ SkyComputerUseService 在录制期间会监听 App 激活/切换（Dock 点击�
 
 禁止：用「已经在目标页了」「这步不重要」「效果一样」等理由跳过录制中的正常 action；禁止批量连点多个录制步骤而不逐步校验；禁止复用过期的 `element_index` 而不重取树。
 
+### 动作等价约束（强制）
+
+回放和生成技能必须复刻**用户实际做过的动作类型**，不能把中间 UI 操作折叠成最终状态：
+
+- 只有录制事件本身是在浏览器地址栏 / 原生 URL 输入框输入地址并提交时，才允许用「地址栏写 URL + Return」回放。
+- 如果录制里用户是在页面内搜索框输入关键词、点击页面内按钮、选择筛选项、填写表单，即使这些动作最终导致 URL 变化，也必须回放为「定位页面内控件 → 输入/点击 → 校验结果」，禁止直接导航到变化后的最终 URL。
+- `window.location`、AppleScript `set URL of front document`、直接打开搜索结果页等只允许作为录制中真实 URL 导航动作的实现方式；不得替代页面内搜索、筛选、翻页、提交等用户动作。
+- 如果页面内控件 AX 定位不稳定，必须按 AX → hover → OCR → 坐标扫描降级继续定位该控件；仍不得用最终 URL 绕过该步骤。
+- 每次回放总结必须按动作时间线说明实际执行了哪些动作；若采用任何等价替代，必须明确标注并说明原因，且不能违反以上规则。
+
 生成回放技能时，必须把上述纪律写进技能步骤（模板见 `references/replay-skill-template.md`）。
 
 ## 从录制生成技能（核心价值）
@@ -95,7 +105,7 @@ SkyComputerUseService 在录制期间会监听 App 激活/切换（Dock 点击�
 1. 先读 `references/event-stream.md` 学会解读 `events.jsonl`（应用/窗口归属、选中/焦点、AX diff 语法、敏感信息处理）。
 2. **按时间顺序把每个结构性动作映射成一个回放步骤**，覆盖完整链路：把打开/激活应用、地址栏导航、进入列表、进入配置页等前置动作也纳入，不要跳到「有意义的那一步」。只有明确的误操作（误点后立刻撤销、无意义的来回滚动）才作为噪声剔除，其余一律保留。
 3. 仅把**随场景变化的演示值**（网址、工作流名、收件人、金额、文件名…）抽成**技能输入参数**并给出录制默认值；动作本身与其顺序不做删减。若有影响技能的歧义，先问清再动手。
-4. 文本输入必须按控件能力选择写法：原生输入框/地址栏可用 `sky.set_value`；如果录制目标软件不支持 AX 写值、`set_value` 写后校验失败、或 AX 显示为 `文本输入区` / 编辑器容器 / contenteditable / 桌面 IM 输入区，生成技能时必须降级为 shell 层 `/usr/bin/pbcopy` 设置剪贴板（用绝对路径，避免沙箱 PATH 收窄报 `pbcopy 在当前环境不可用`；不可用时按 `cua-router-basic` 的 `references/input-keyboard.md` 兜底章节处理）+ shell 层 `/usr/bin/osascript` 发送系统级 `Command+A` / `Command+V`。该类外部系统动作后立刻 `ax.get(app, { refresh: true })` 重新取树，避免旧 `element_index` 失效。
+4. 文本输入必须按控件能力选择写法：原生输入框/地址栏可用 `sky.set_value`；但在 Chrome/Safari 中，普通文本输入必须先排除顶部导航地址栏，只有明确的 URL 打开/导航动作才允许写入地址栏；页面内搜索框、筛选框、表单字段必须先定位对应控件再输入并校验，不得直接打开最终结果页或改写 URL 来替代；如果录制目标软件不支持 AX 写值、`set_value` 写后校验失败、或 AX 显示为 `文本输入区` / 编辑器容器 / contenteditable / 桌面 IM 输入区，生成技能时必须降级为 shell 层 `/usr/bin/pbcopy` 设置剪贴板（用绝对路径，避免沙箱 PATH 收窄报 `pbcopy 在当前环境不可用`；不可用时按 `cua-router-basic` 的 `references/input-keyboard.md` 兜底章节处理）+ shell 层 `/usr/bin/osascript` 发送系统级 `Command+A` / `Command+V`。该类外部系统动作后立刻 `ax.get(app, { refresh: true })` 重新取树，避免旧 `element_index` 失效。
 5. 消息发送类动作必须重新定位并点击「发送」按钮；不要把录制里的回车或用户键盘输入翻译成 `Return` 发送，除非录制目标明确是地址栏导航或表单提交且已校验。
 6. 优先用稳定语义接口（连接器/专用工具）完成稳定操作；UI 交互、依赖视觉的校验、或“操作界面本身就是任务”时用 **Computer Use**。严格执行上方「回放执行纪律」：**每个 action 操作前审视 AX Tree 并记录目标节点 → 执行本步 → 操作后再次审视 AX Tree 验证上一步 → 再规划下一步**；凡是 shell / AppleScript / swift / 手动鼠标等外部动作后，用 `{ refresh: true }` 强制重取。
 7. 生成的回放技能应**依赖 cua-router-basic**、用 `sky.*` + `ax.*` 执行，跑在已内置的快执行链上——这是比坐标回放更准、更快、更抗漂移的方式。模板见 `references/replay-skill-template.md`。

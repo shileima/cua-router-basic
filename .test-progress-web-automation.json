@@ -1,0 +1,49 @@
+{
+  "updatedAt": "2026-08-21T15:55:00+08:00",
+  "scope": "网页自动化指令全量回归（index.md 49条 + UI独有4条）",
+  "totalIndexed": 49,
+  "totalUIOnly": 4,
+  "totalTarget": 53,
+  "testedPass": 12,
+  "testedFail": 0,
+  "inProgress": 1,
+  "pending": 40,
+  "locatorStrategy": "全部元素选择器使用新建 LLM 动态定位（方式 A）",
+  "workflows": {
+    "WF3-网页操作基础-20260821": {
+      "url": "https://rpa.sankuai.com/space/SPf68ba81271b74093/workflow/workflow-cf5f15d4-2/config?subType=2",
+      "status": "building",
+      "scenario": "skills-platform/.../web-navigation-basic.md",
+      "sites": {
+        "打开网页": "https://www.baidu.com",
+        "导航到URL": "https://www.sogou.com",
+        "第二标签": "https://www.sina.com.cn",
+        "切换URL": "https://www.sogou.com",
+        "关闭URL": "https://www.sina.com.cn"
+      },
+      "commands_planned": 15,
+      "commands_on_canvas": [
+        "1.打开网页(百度)",
+        "2.导航到URL(搜狗)",
+        "3.等待页面加载(LOAD)",
+        "4.截图",
+        "5.刷新网页",
+        "6.网页后退",
+        "7.网页前进",
+        "8.切换到指定索引(index占位)",
+        "9.切换到指定URL(url占位)",
+        "10.切换到指定标题(title占位)",
+        "11.关闭指定索引(index占位)",
+        "12.关闭指定URL(url占位)",
+        "13.关闭浏览器"
+      ],
+      "commands_pending": [
+        "打开网页(新浪第二标签) — 插入在「网页前进」之后",
+        "删除所有Cookie — 插入在「关闭浏览器」之前",
+        "切换/关闭节点参数：索引步进器=0/1，URL/标题填真实值",
+        "调试运行"
+      ],
+      "note": "已清除重复节点；真实站点已替换 example 域；切换类字段为步进器非文本框"
+    }
+  }
+}

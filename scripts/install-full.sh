@@ -71,6 +71,18 @@ if [ "$RUN_SLIM" -eq 1 ]; then
   bash "$SCRIPT_DIR/install-slim.sh" "${slim_args[@]}"
 fi
 
+# Publish the bundled record-desk-basic companion skill into the automan profile
+# BEFORE vendor bootstrap. Vendor setup (chatgpt/download) is slow and may die
+# (network / authorization). If it dies, the sync_automan_install call at the
+# bottom is skipped and record-desk-basic never appears in
+# <automan-profile>/skills/, breaking cua-agent event-stream recording. The
+# companion skill has no vendor dependency, so it is safe to publish early.
+# The final sync_automan_install below will re-run this idempotently.
+if automan_available; then
+  sync_record_desk_basic_install "$SKILL_ROOT" || \
+    warn "record-desk-basic companion skill sync failed (will retry after vendor bootstrap)"
+fi
+
 ensure_vendor_chatgpt() {
   info "extracting vendor from ChatGPT.app"
   bash "$SKILL_ROOT/scripts/setup-vendor.sh"

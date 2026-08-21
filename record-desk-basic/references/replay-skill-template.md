@@ -4,6 +4,8 @@
 
 > **完整性原则**：回放步骤必须**严格覆盖录制里的全部结构性动作**，从打开/激活应用、地址栏导航等前置动作，一直到保存与结果校验，逐步复刻、不删减不跳步（对齐 `codex-record-skill`）。只把随场景变化的演示值抽成输入参数，动作与其顺序保持不变。
 
+> **执行纪律（强制）**：回放时**认真对待录制里的每一个正常 action**，不得跳过、合并或忽略。每个 action 必须走完「操作前审视 AX Tree → 记录本步目标节点 → 执行 → 操作后审视 AX Tree 验证上一步 → 规划下一步」循环；验证失败时停止跳步，先排查再继续。
+
 ## 目标技能骨架
 
 ```
@@ -35,14 +37,27 @@ description: >
 |---|---|---|
 | `<param1>` | <来自录制里应参数化的值> | … |
 
+## 回放执行纪律
+
+每个 action（对应录制时间线里的一个正常操作）必须按以下循环执行，**一步都不能合并或省略**：
+
+| 阶段 | 要求 |
+|---|---|
+| **操作前** | `ax.get(app)` 审视当前 AX Tree 与 UI 状态；确认与录制该步前的上下文一致；**书面记录**本步目标节点（role、文案、`element_index` 或语义定位） |
+| **执行** | 只做本步这一个 action，严格对应录制事件 |
+| **操作后** | 再次 `ax.get(app)`（外部系统动作后 `{ refresh: true }`），**验证上一步是否生效**（文本、焦点、页面、按钮状态等） |
+| **规划下一步** | 基于最新 AX Tree 定位下一节点；验证失败则停止跳步，排查/降级后再继续 |
+
+禁止：跳过「看似重复」的点击/导航；连做多个录制步骤而不逐步校验；在验证失败时凭猜测继续。
+
 ## 回放步骤
 
-遵循 `cua-router-basic` 主文件核心操作规范。**按录制时间线逐个动作展开为一个步骤，严格覆盖完整链路**（含打开/激活应用、导航等前置动作，不假设已在目标页面）。每步：定位 → 交互 → 验证。
+遵循 `cua-router-basic` 主文件核心操作规范。**按录制时间线逐个动作展开为一个步骤，严格覆盖完整链路**（含打开/激活应用、导航等前置动作，不假设已在目标页面）。每步严格执行上方「回放执行纪律」。
 
 1. 打开/激活目标应用并导航到起始页（如地址栏输入 URL）——这也是录制的一部分，必须写出来。
-2. 用地址栏/应用状态定位目标窗口：`ax.get("<bundleId>")` → `ax.findIdx(...)`。
+2. **操作前** `ax.get("<bundleId>")` 审视 AX Tree → 定位本步目标 → 交互 → **操作后** `ax.get(app)` 验证上一步生效。
 3. 交互用 `sky.click / sky.set_value / sky.press_key`；URL/中文先判断控件能力，原生输入框用 `set_value`，不支持 AX 写值的输入区用 shell 级系统粘贴。
-4. 关键步骤后 `ax.get(app)` 校验结果；shell / AppleScript / swift 等外部系统动作后必须 `ax.get(app, { refresh: true })`，避免复用旧 `element_index`。
+4. shell / AppleScript / swift 等外部系统动作后必须 `ax.get(app, { refresh: true })`，避免复用旧 `element_index`。
    - AX 缺失时按 AX → hover → OCR → 坐标扫描 降级（见 cua-router-basic `references/ax-locating.md`）。
 5. 最后一步做结果校验（如出现「已保存」或目标节点文本），与录制的收尾动作对应。
 ```
@@ -85,7 +100,25 @@ await sky.click({ app, element_index: sendIdx });
 const afterSend = await ax.get(app, { refresh: true });
 ```
 
+## 单步回放代码骨架（生成技能时应嵌入类似结构）
+
+```js
+// 操作前：审视 AX Tree，记录本步目标节点
+let s = await ax.get(app, { refresh: true });
+let idx = ax.findIdx(s.text, "<本步目标文案>");
+if (idx == null) throw new Error("操作前未找到目标节点: <本步目标文案>");
+
+// 执行：只做本步 action
+await sky.click({ app, element_index: idx });
+
+// 操作后：再次审视 AX Tree，验证上一步生效
+s = await ax.get(app, { refresh: true });
+// 在此断言预期变化（文本已写入、页面已跳转、按钮已禁用等）
+if (!/* 上一步验证条件 */) throw new Error("上一步操作未生效，停止跳步");
+```
+
 ## 校验
 
 - 用 `skill-creator` 规范校验生成技能结构完整、可发现。
 - 回放技能必须能在 cua-router-basic 运行时下实际跑通，而不仅是结构合法。
+- 回放时必须逐步执行每个 action，且每步都有操作前/后的 AX Tree 审视与验证，不得批量跳过。

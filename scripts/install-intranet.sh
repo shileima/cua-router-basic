@@ -160,6 +160,19 @@ main() {
   # Remember this is an intranet install so daemon.sh / update-intranet.sh keep
   # vendor bootstrap and updates on the intranet (no GitHub fallback).
   write_intranet_marker "$TARGET" "$CUA_ROUTER_INTRANET_BASE"
+
+  # Distribute the bundled record-desk-basic companion skill BEFORE vendor
+  # bootstrap. vendor download is the slowest / most fragile step (~700MB, may
+  # time out or die on authorization prompts); if it fails, the top-level
+  # sync_automan_install call below is skipped and record-desk-basic never
+  # lands in <automan-profile>/skills/. Since the companion skill only needs
+  # the already-unpacked slim files (no vendor deps), publish it now so the
+  # cua-agent can start event-stream recording even when vendor is still WIP.
+  if automan_available; then
+    sync_record_desk_basic_install "$TARGET" || \
+      warn "record-desk-basic companion skill sync failed (will retry after vendor bootstrap)"
+  fi
+
   if vendor_ready "$TARGET"; then
     info "vendor already present"
     if [ "$INSTALL_CURSOR" -eq 1 ]; then

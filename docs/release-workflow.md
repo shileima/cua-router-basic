@@ -165,6 +165,7 @@ curl -fsSL https://raw.githubusercontent.com/shileima/cua-router-basic/main/scri
 | **0.4.9-beta.2** | 新增 `ax.get({maxAgeMs})` + `ax._stats()` / `ax._resetStats()` 应对轮询异步 UI |
 | **0.4.27** | 新增 `/cua` 结构化端点 + `SKY_TRANSPORT` 传输模式（node_repl/mcp）；兼容 codex 0.148+ 沙箱（vendor 回退 + process 垫片） |
 | **0.4.28** | 启动前端口自愈清理（18901/18902 被占用时自动清理，无需手动 kill/FORCE_TAKEOVER）；安装后自动唤起「Enable ChatGPT Computer Use」授权窗 |
+| **0.4.29** | record-desk-basic 强化回放执行纪律（每 action 操作前/后审视 AX Tree、验证上一步、禁止跳步）；安装流程提前同步 companion 技能 |
 | 0.5.0（预留） | beta 稳定后的第一个正式版号；应包含 beta.1/beta.2 的所有变化 |
 
 ## Checklist：一次典型发布

@@ -16,6 +16,7 @@
 
 | 版本 | 关键变化 |
 |---|---|
+| **0.4.30** | 回放动作等价约束：禁止用最终 URL 替代页面内搜索/筛选/表单操作；Chrome/Safari 地址栏写入保护 |
 | **0.4.29** | record-desk-basic 强化回放执行纪律（每 action 操作前/后审视 AX Tree、验证上一步、禁止跳步）；安装流程提前同步 companion 技能 |
 | **0.4.28** | 启动前端口自愈清理（18901/18902 被占用时自动清理，无需手动 kill/FORCE_TAKEOVER）；安装后自动唤起「Enable ChatGPT Computer Use」授权窗 |
 | **0.4.27** | 新增 `/cua` 结构化端点 + `SKY_TRANSPORT` 传输模式（node_repl/mcp）；兼容 codex 0.148+ 沙箱（vendor 回退 + process 垫片） |
@@ -27,6 +28,12 @@
 ---
 
 ## 详情
+
+### 0.4.30
+
+- **动作等价约束**：回放必须复刻录制中的动作类型；页面内搜索框、筛选按钮、表单提交不得折叠为直接打开最终 URL。
+- **地址栏保护**：Chrome/Safari 普通文本输入默认不得写入顶部导航地址栏；仅明确的 URL 导航动作才允许地址栏 `set_value` + Return。
+- **文档同步**：`SKILL.md`、`record-desk-basic` 技能与模板（`event-stream.md`、`replay-skill-template.md`）统一上述纪律。
 
 ### 0.4.29
 

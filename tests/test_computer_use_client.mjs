@@ -133,13 +133,31 @@ test("ax.get 相邻两次调用命中缓存，只发一次 sky.get_app_state", a
   assert.equal(s1, s2);
 });
 
-test("ax.get({refresh:true}) 强制绕过缓存", async () => {
+test("ax.get: 空 AX 快照重试，且不写入缓存", async () => {
   invalidateAxCache();
-  const sky = createMockSky();
+  const states = [{ text: "" }, makeSampleState()];
+  const sky = createMockSky({ stateProvider: () => states.shift() });
   const ax = createAxHelpers(sky);
-  await ax.get("com.google.Chrome");
-  await ax.get("com.google.Chrome", { refresh: true });
+
+  const state = await ax.get("com.google.Chrome", { emptyRetries: 1, retryDelayMs: 0 });
+
+  assert.equal(state.text, SAMPLE_AX_TEXT);
   assert.equal(sky.calls.get_app_state, 2);
+  await ax.get("com.google.Chrome");
+  assert.equal(sky.calls.get_app_state, 2, "有效快照应被缓存");
+});
+
+test("wrapSkyClient: 空 disableDiff 快照不能覆盖已有有效缓存", async () => {
+  invalidateAxCache();
+  const mock = createMockSky({ stateProvider: (_input, count) => count === 1 ? makeSampleState() : { text: "" } });
+  const sky = wrapSkyClient(mock);
+  const ax = createAxHelpers(sky);
+
+  await sky.get_app_state({ app: "com.google.Chrome", disableDiff: true });
+  await sky.get_app_state({ app: "com.google.Chrome", disableDiff: true });
+  await ax.get("com.google.Chrome");
+
+  assert.equal(mock.calls.get_app_state, 2, "空快照不应覆盖之前的有效缓存");
 });
 
 test("ax.get 强制 disableDiff:true", async () => {

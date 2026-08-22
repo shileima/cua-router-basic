@@ -114,9 +114,19 @@ export function invalidateAxCache(app) {
   }
 }
 
+/** @param {unknown} state */
+function isUsableAxState(state) {
+  return typeof state?.text === "string" && state.text.trim().length > 0;
+}
+
 /** 内部：写入缓存条目，附带获取时间戳。仅供 wrapSkyClient / createAxHelpers 使用。 */
 function writeCacheEntry(app, state) {
+  if (!isUsableAxState(state)) return;
   getAxCache().set(app, { state, fetchedAt: Date.now() });
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function axStatsSnapshot() {
@@ -257,10 +267,10 @@ export function createAxHelpers(sky) {
      *   - 显式：ax.get(app, { refresh: true }) 或 ax.invalidate(app)
      *   - 兜底：ax.get(app, { maxAgeMs: 500 }) — 缓存超过 500ms 自动重取
      * @param {string} app
-     * @param {{ refresh?: boolean, maxAgeMs?: number | null }} [opts]
+     * @param {{ refresh?: boolean, maxAgeMs?: number | null, emptyRetries?: number, retryDelayMs?: number }} [opts]
      */
     async get(app, opts = {}) {
-      const { refresh = false, maxAgeMs = null } = opts;
+      const { refresh = false, maxAgeMs = null, emptyRetries = 0, retryDelayMs = 250 } = opts;
       if (typeof app !== "string" || !app) {
         throw new Error("ax.get(app) requires an app bundle id string");
       }
@@ -285,7 +295,13 @@ export function createAxHelpers(sky) {
         stats.misses += 1;
       }
 
-      const state = await sky.get_app_state({ app, disableDiff: true });
+      let state;
+      const attempts = Math.max(1, Math.floor(Number(emptyRetries) + 1));
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        state = await sky.get_app_state({ app, disableDiff: true });
+        if (isUsableAxState(state) || attempt === attempts - 1) break;
+        await sleep(Math.max(0, Number(retryDelayMs) || 0));
+      }
       writeCacheEntry(app, state);
       return state;
     },
@@ -375,6 +391,8 @@ export function createAtomicActions({ sky, ax, write = null }) {
      *   target: string[] | string[][],
      *   verify?: string[] | string[][],
      *   refreshBefore?: boolean,
+     *   verifyRetries?: number,
+     *   verifyRetryDelayMs?: number,
      *   summaryMaxLines?: number,
      * }} input
      */
@@ -455,7 +473,15 @@ export function createAtomicActions({ sky, ax, write = null }) {
 
       let afterState;
       try {
-        afterState = await ax.get(app, { refresh: true });
+        const verifyRetries = Math.max(0, Math.floor(Number(input.verifyRetries ?? 0)));
+        const verifyRetryDelayMs = Math.max(0, Number(input.verifyRetryDelayMs ?? 250) || 0);
+        for (let attempt = 0; ; attempt += 1) {
+          afterState = await ax.get(app, { refresh: true });
+          if (verifyGroups.length === 0 || locateFirstKeywordGroup(ax, afterState.text, verifyGroups) != null || attempt >= verifyRetries) {
+            break;
+          }
+          await sleep(verifyRetryDelayMs);
+        }
       } catch (error) {
         return emit({
           ok: false,

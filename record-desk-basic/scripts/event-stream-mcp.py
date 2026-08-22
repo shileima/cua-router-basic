@@ -105,6 +105,7 @@ def restore_router_without_event_stream() -> None:
 
 
 def handle(message: dict[str, Any]) -> dict[str, Any] | None:
+    request_id = message.get("id")
     method = message.get("method")
     if request_id is None:
         return None
